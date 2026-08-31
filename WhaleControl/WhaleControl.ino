@@ -1,5 +1,8 @@
 //WHALE
 
+//PID controller stuff
+//https://github.com/br3ttb/Arduino-PID-Library/
+
 //Board https://espressif.github.io/arduino-esp32/package_esp32_index.json
 //arduino-esp32 by espressif
 //Flash as ESP32-WROOM-DA
