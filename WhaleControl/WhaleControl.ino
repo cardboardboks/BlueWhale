@@ -9,7 +9,7 @@
 
 #include <Wire.h>
 #include "src/libraries/Arduino-PID-Library/PID_v1.h"
-#include "src/libraries/ESP32Servo/ESP32Servo.h"
+//#include "src/libraries/ESP32Servo/ESP32Servo.h"
 
 #define PIN_INPUT 0
 #define PIN_OUTPUT 3
@@ -32,7 +32,7 @@ void setup() {
   //turn the PID on
   myPID.SetMode(AUTOMATIC);
 
-  ESP32PWM::allocateTimer(0);
+/*  ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2);
   ESP32PWM::allocateTimer(3);
@@ -40,6 +40,7 @@ void setup() {
   right.setPeriodHertz(50);       // standard 50 hz servo
   left.attach(34, 1000, 2000);  // attaches the servo object
   right.attach(35, 1000, 2000);
+  */
 }
 
 void loop() {
