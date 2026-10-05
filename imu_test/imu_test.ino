@@ -190,9 +190,9 @@ void loop() {
     Serial.print("\t");
     mpu.dmpGetGyro(&gy, fifoBuffer);
     if (gy.z < 0) {
-      yaw = gy.z * -.01;
+      yaw = gy.z * -1;
     } else {
-      yaw = gy.z * .01;
+      yaw = gy.z * 1;
     }
 
     Ytotal = Ytotal - Yreadings[YreadIndex];
@@ -212,18 +212,18 @@ void loop() {
     digitalWrite(LED_PIN, blinkState);
   }
 
-  if (Y > 240) {
-    Y = 240;
+  if (Y > 24000) {
+    Y = 24000;
   }
 
   if (RP > 70) {
-    pixels.setPixelColor(0, pixels.Color(Y + 10, 0, 0));
-    pixels.setPixelColor(1, pixels.Color(Y + 10, 0, 0));
-    pixels.setPixelColor(2, pixels.Color(Y + 10, 0, 0));
+    pixels.setPixelColor(0, pixels.Color(Y * .01 + 10, 0, 0));
+    pixels.setPixelColor(1, pixels.Color(Y * .01 + 10, 0, 0));
+    pixels.setPixelColor(2, pixels.Color(Y * .01 + 10, 0, 0));
   } else {
-    pixels.setPixelColor(0, pixels.Color(0, Y + 10, 0));
-    pixels.setPixelColor(1, pixels.Color(0, Y + 10, 0));
-    pixels.setPixelColor(2, pixels.Color(0, Y + 10, 0));
+    pixels.setPixelColor(0, pixels.Color(0, Y * .01 + 10, 0));
+    pixels.setPixelColor(1, pixels.Color(0, Y * .01 + 10, 0));
+    pixels.setPixelColor(2, pixels.Color(0, Y * .01 + 10, 0));
   }
   pixels.show();
 }
