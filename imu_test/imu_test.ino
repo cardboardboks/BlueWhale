@@ -4,8 +4,15 @@
 #include "MPU6050_6Axis_MotionApps612.h"
 #include "Wire.h"
 
+#include <Adafruit_NeoPixel.h>
+#ifdef __AVR__
+#include <avr/power.h>  // Required for 16 MHz Adafruit Trinket
+#endif
+
 // class default I2C address is 0x68
 MPU6050 mpu;
+
+Adafruit_NeoPixel pixels(3, 2, NEO_GRB + NEO_KHZ800);
 
 #define INTERRUPT_PIN 3  // use pin 2 on Arduino Uno & most boards
 #define LED_PIN 13       // (Arduino is 13, Teensy is 11, Teensy++ is 6)
@@ -32,6 +39,21 @@ float ypr[3];         // [yaw, pitch, roll]   yaw/pitch/roll container and gravi
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
 
+int roll = 0;
+int pitch = 0;
+int yaw = 0;
+
+const int RPnumReadings = 50;
+int RPreadings[RPnumReadings];  // the readings from the analog input
+int RPreadIndex = 0;            // the index of the current reading
+int RPtotal = 0;                // the running total
+int RP = 0;                     // the average
+
+const int YnumReadings = 5;
+int Yreadings[YnumReadings];  // the readings from the analog input
+int YreadIndex = 0;           // the index of the current reading
+int Ytotal = 0;               // the running total
+int Y = 0;                    // the average
 
 // ================================================================
 // ===               INTERRUPT DETECTION ROUTINE                ===
@@ -52,7 +74,7 @@ void setup() {
   Wire.setClock(400000);  // 400kHz I2C clock. Comment this line if having compilation difficulties
 
   // initialize serial communication
-  Serial.begin(115200);
+  // Serial.begin(115200);
 
   // initialize device
   Serial.println(F("Initializing I2C devices..."));
@@ -111,6 +133,17 @@ void setup() {
   // configure LED for output
   pinMode(LED_PIN, OUTPUT);
 
+
+  for (int RPthisReading = 0; RPthisReading < RPnumReadings; RPthisReading++) {
+    RPreadings[RPthisReading] = 0;
+  }
+  for (int YthisReading = 0; YthisReading < YnumReadings; YthisReading++) {
+    Yreadings[YthisReading] = 0;
+  }
+
+
+  pixels.begin();                   // INITIALIZE NeoPixel strip object (REQUIRED)
+  pixels.clear();                   // Set all pixel colors to 'off'
   Wire.setWireTimeout(3000, true);  // Timeout after 3ms and reset the bus
 }
 
@@ -130,20 +163,67 @@ void loop() {
     mpu.dmpGetQuaternion(&q, fifoBuffer);
     mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-    Serial.print("pr\t");
-    Serial.print(ypr[1] * 180 / M_PI);
-    Serial.print("\t");
-    Serial.print(ypr[2] * 180 / M_PI);
+    if (ypr[1] * 180 / M_PI < 0) {
+      pitch = ypr[1] * -180 / M_PI;
+    } else {
+      pitch = ypr[1] * 180 / M_PI;
+    }
+
+    if (ypr[2] * 180 / M_PI < 0) {
+      roll = ypr[2] * -180 / M_PI;
+    } else {
+      roll = ypr[2] * 180 / M_PI;
+    }
+
+    RPtotal = RPtotal - RPreadings[RPreadIndex];
+    RPreadings[RPreadIndex] = roll + pitch;
+    RPtotal = RPtotal + RPreadings[RPreadIndex];
+    RPreadIndex = RPreadIndex + 1;
+
+    if (RPreadIndex >= RPnumReadings) {
+      RPreadIndex = 0;
+    }
+    RP = RPtotal / RPnumReadings;
+
+    Serial.print(RP);
 
     Serial.print("\t");
     mpu.dmpGetGyro(&gy, fifoBuffer);
-    Serial.print("\tRaw Gyro Z\t");
-    Serial.print(gy.z);
+    if (gy.z < 0) {
+      yaw = gy.z * -.01;
+    } else {
+      yaw = gy.z * .01;
+    }
 
-    Serial.println();
+    Ytotal = Ytotal - Yreadings[YreadIndex];
+    Yreadings[YreadIndex] = yaw;
+    Ytotal = Ytotal + Yreadings[YreadIndex];
+    YreadIndex = YreadIndex + 1;
+
+    if (YreadIndex >= YnumReadings) {
+      YreadIndex = 0;
+    }
+    Y = Ytotal / YnumReadings;
+
+    Serial.println(Y);
 
     // blink LED to indicate activity
     blinkState = !blinkState;
     digitalWrite(LED_PIN, blinkState);
   }
+
+  if (Y > 240) {
+    Y = 240;
+  }
+
+  if (RP > 70) {
+    pixels.setPixelColor(0, pixels.Color(Y + 10, 0, 0));
+    pixels.setPixelColor(1, pixels.Color(Y + 10, 0, 0));
+    pixels.setPixelColor(2, pixels.Color(Y + 10, 0, 0));
+  } else {
+    pixels.setPixelColor(0, pixels.Color(0, Y + 10, 0));
+    pixels.setPixelColor(1, pixels.Color(0, Y + 10, 0));
+    pixels.setPixelColor(2, pixels.Color(0, Y + 10, 0));
+  }
+  pixels.show();
 }
