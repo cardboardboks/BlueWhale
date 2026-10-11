@@ -83,7 +83,7 @@ void drive_esc(int thr1, int thr2) {
     }
     uint32_t runAt = SEND_EDT ? 9000 : 5000;
 
-    if (crsf.isLinkUp() == 0) {
+    if (crsf.isLinkUp() == 0 || ch[3] == 1000) {
       thr1 = 0;
       thr2 = 0;
     }

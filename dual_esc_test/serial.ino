@@ -4,15 +4,15 @@ void serial_debug(int message_type) {
 
     if (message_type == 1) {
 
-      Serial.println("Pre Arm Safe Check");
+      Serial.println(" Pre Arm Safe Check");
 
-      Serial.print("safe_switch ");
+      Serial.print(" safe_switch ");
       Serial.println(safe_switch);
 
-      Serial.print("safe_sticks ");
+      Serial.print(" safe_sticks ");
       Serial.println(safe_sticks);
 
-      Serial.print("safe_link ");
+      Serial.print(" safe_link ");
       Serial.println(safe_link);
 
       for (int i = 1; i <= 8; i++) {
@@ -78,18 +78,15 @@ void serial_debug(int message_type) {
                     (esc2.rpm() / gearbox_ratio2),
                     (M_PI * (wheel_diamiter1 / 1000) * (esc2.rpm() / gearbox_ratio2) * .06));
 
-      Serial.println("");
-      Serial.print("link: ");
+      Serial.print(" link: ");
       Serial.print(crsf.isLinkUp() ? "UP" : "DOWN");
       const crsfLinkStatistics_t *link = crsf.getLinkStatistics();
       Serial.print("  LQ: ");
       Serial.print(link->uplink_Link_quality);
       Serial.print("  RSSI: -");
       Serial.print(link->active_antenna == 0 ? link->uplink_RSSI_1 : link->uplink_RSSI_2);
-      Serial.print("dBm  armed: ");
-      Serial.print(crsf.isArmed() ? "yes" : "no");
+      Serial.println("dBm ");
 
-      Serial.print("channels 1-8:");
       for (int i = 1; i <= 8; i++) {
         Serial.print(" ");
         Serial.print(ch[i]);

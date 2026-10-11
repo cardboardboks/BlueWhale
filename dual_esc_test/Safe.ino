@@ -9,13 +9,13 @@ void pre_arm_safe() {
     crsf_rx();
     drive_esc(0, 0);
 
-    if (ch[3] == 2000) {
+    if (ch[3] == 1000) {
       safe_switch = 1;
     } else {
       safe_switch = 0;
     }
 
-    if (ch[1] == 1500 && ch[2] == 1500) {
+    if ((ch[1] > 1480 && ch[1] < 1520) && (ch[2] > 1480 && ch[2] < 1520)) {
       safe_sticks = 1;
     } else {
       safe_sticks = 0;
