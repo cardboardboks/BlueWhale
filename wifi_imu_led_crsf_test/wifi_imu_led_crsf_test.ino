@@ -206,12 +206,13 @@ float ypr[3];
 bool dmpReady = false;
 
 void setup() {
- // Serial.begin(921600);
+  // Serial.begin(921600);
 
   crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
-  if (!crsfSerial) while (1) Serial.println("Invalid crsfSerial configuration");
+  if (!crsfSerial)
+    while (1) Serial.println("Invalid crsfSerial configuration");
 
-  crsf.begin(crsfSerial); // defaults to CRSF_ADDRESS_FLIGHT_CONTROLLER
+  crsf.begin(crsfSerial);  // defaults to CRSF_ADDRESS_FLIGHT_CONTROLLER
 
   delay(2000);
   Serial.println("\nConfiguring Access Point...");
@@ -382,7 +383,7 @@ void loop() {
     webSocket.broadcastTXT(currentData);
   }
 
-crsf.update();
+  crsf.update();
 
   Serial.print("link: ");
   Serial.print(crsf.isLinkUp() ? "UP" : "DOWN");
@@ -395,12 +396,9 @@ crsf.update();
   Serial.print(crsf.isArmed() ? "yes" : "no");
 
   Serial.print("channels 1-8:");
-  for (int i = 1; i <= 8; i++)
-  {
+  for (int i = 1; i <= 8; i++) {
     Serial.print(" ");
     Serial.print(crsf.getChannel(i));
   }
   Serial.println("");
-
-
 }
