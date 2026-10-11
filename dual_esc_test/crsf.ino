@@ -7,27 +7,36 @@ void boot_crsf() {
   crsf.begin(crsfSerial);  // defaults to CRSF_ADDRESS_FLIGHT_CONTROLLER
 }
 
-void crsf_recive() {
+void crsf_rx() {
 
   crsf.update();
 
   for (int i = 1; i <= 8; i++) {
     ch[i] = crsf.getChannel(i);
-  }
-
-  if (millis() - lastTelemMs >= TELEM_INTERVAL_MS) {
-    lastTelemMs = millis();
-    sendRxBattery(26, 1.2, 10, 50);
+    if (ch[i] < 1000) {
+      ch[i] = 1000;
+    }
+    if (ch[i] > 2000) {
+      ch[i] = 2000;
+    }
   }
 }
 
-static void sendRxBattery(float voltage, float current, float capacity, float remaining) {
+void crsf_tx() {
+
+  float voltage;
+  float current;
+  float capacity;
+  float remaining;
   crsf_sensor_battery_t crsfBatt = { 0 };
 
-  // Values are MSB first (BigEndian)
-  crsfBatt.voltage = htobe16((uint16_t)(voltage * 10.0));  //Volts
-  crsfBatt.current = htobe16((uint16_t)(current * 10.0));  //Amps
-  crsfBatt.capacity = htobe24((uint32_t)(capacity));       //mAh (24 bit field, max 16777215mAh)
-  crsfBatt.remaining = (uint8_t)(remaining);               //percent
-  crsf.queuePacket(CRSF_SYNC_BYTE, CRSF_FRAMETYPE_BATTERY_SENSOR, &crsfBatt, sizeof(crsfBatt));
+  if (millis() - lastTelemMs >= TELEM_INTERVAL_MS) {
+    lastTelemMs = millis();
+
+    crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));  //Volts
+    crsfBatt.current = htobe16((uint16_t)(esc2.voltage() * 10.0));  //Amps
+    crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));   //mAh (24 bit field, max 16777215mAh)
+    crsfBatt.remaining = (uint8_t)(esc2.temperatureC());            //percent
+    crsf.queuePacket(CRSF_SYNC_BYTE, CRSF_FRAMETYPE_BATTERY_SENSOR, &crsfBatt, sizeof(crsfBatt));
+  }
 }

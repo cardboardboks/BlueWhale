@@ -43,7 +43,12 @@ const bool SEND_EDT = true;  // run once true, once false
 
 BlockNot serial_freq(500);
 
+int deadband = 10;
+
 int ch[8] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
+bool safe_switch = 0;
+bool safe_sticks = 0;
+bool safe_link = 0;
 
 uint32_t lastTelemMs = 0;
 
@@ -62,11 +67,13 @@ void setup() {
   Serial.println("Whale booted");
 
   boot_crsf();
+  pre_arm_safe();
 }
 
 void loop() {
 
-  drive_esc(ch[3], ch[3]);
-  crsf_recive();
-  serial_debug();
+  drive_esc(ch[1], ch[1]);
+  crsf_rx();
+  crsf_tx();
+  serial_debug(2);
 }

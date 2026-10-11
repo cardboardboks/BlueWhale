@@ -27,19 +27,15 @@ void boot_esc() {
   // wait for ESC to boot before enabling EDT
   for (unsigned long start = millis(); millis() - start < esc_arm_duration;) {
     // add led waiting colour
-    drive_esc(1500, 1500);
+    drive_esc(0, 0);
   }
 
   // enable EDT
   esc1.command(DSHOT_CMD_EDT_ENABLE);
   esc2.command(DSHOT_CMD_EDT_ENABLE);
-
 }
 
 void drive_esc(int thr1, int thr2) {
-
-  throttle1 = thr1;
-  throttle2 = thr2;
 
   if (thr1 == 0) {
     thr1 = 0;
@@ -48,7 +44,7 @@ void drive_esc(int thr1, int thr2) {
       thr1 = map(thr1, 1000, 1499, 48, 1047);
     }
     if (thr1 == 1500) {
-      // this maybe    thr1 = 0;
+      //thr1 = 0;
       thr1 = 1048;
     }
     if (thr1 > 1500) {
@@ -60,14 +56,14 @@ void drive_esc(int thr1, int thr2) {
     thr2 = 0;
   } else {
     if (thr2 < 1500) {
-      thr1 = map(thr1, 1000, 1499, 48, 1047);
+      thr2 = map(thr2, 1000, 1499, 48, 1047);
     }
     if (thr2 == 1500) {
-      // this maybe    thr1 = 0;
-      thr1 = 1048;
+      //thr2 = 0;
+      thr2 = 1048;
     }
     if (thr2 > 1500) {
-      thr1 = map(thr1, 1501, 2000, 1049, 2047);
+      thr2 = map(thr2, 1501, 2000, 1049, 2047);
     }
   }
 
@@ -87,7 +83,14 @@ void drive_esc(int thr1, int thr2) {
     }
     uint32_t runAt = SEND_EDT ? 9000 : 5000;
 
-//    if (t > runAt) thr = min(0.54f, 0.50f + (t - runAt) * 0.00002f);  // ramp to 20%
+    if (crsf.isLinkUp() == 0) {
+      thr1 = 0;
+      thr2 = 0;
+    }
+
+    throttle1 = thr1;
+    throttle2 = thr2;
+
     esc1.send(thr1);
     esc2.send(thr2);
   }
