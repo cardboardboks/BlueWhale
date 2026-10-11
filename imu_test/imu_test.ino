@@ -162,13 +162,13 @@ void loop() {
   }
 
   if (RP > roll_flip) {
-    pixels.setPixelColor(0, pixels.Color(Y * .175 + 5, 0, 0));
-    pixels.setPixelColor(1, pixels.Color(Y * .175 + 5, 0, 0));
-    pixels.setPixelColor(2, pixels.Color(Y * .175 + 5, 0, 0));
+    // pixels.setPixelColor(0, pixels.Color(Y * .175 + 5, 0, 0));
+    // pixels.setPixelColor(1, pixels.Color(Y * .175 + 5, 0, 0));
+    // pixels.setPixelColor(2, pixels.Color(Y * .175 + 5, 0, 0));
   } else {
-    pixels.setPixelColor(0, pixels.Color(0, Y * .175 + 5, 0));
-    pixels.setPixelColor(1, pixels.Color(0, Y * .175 + 5, 0));
-    pixels.setPixelColor(2, pixels.Color(0, Y * .175 + 5, 0));
+    // pixels.setPixelColor(0, pixels.Color(0, Y * .175 + 5, 0));
+    // pixels.setPixelColor(1, pixels.Color(0, Y * .175 + 5, 0));
+    // pixels.setPixelColor(2, pixels.Color(0, Y * .175 + 5, 0));
   }
-  pixels.show();
+  // pixels.show();
 }
