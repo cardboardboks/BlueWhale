@@ -7,17 +7,39 @@
 // ch7 n/a
 // ch8 n/a
 
-const float DEADBAND = 0.05f;    // ignore stick noise near centre
-const float STEER_GAIN = 1.0f;   // lower = gentler turning
-const bool INVERT_LEFT = false;  // flip if a motor spins the wrong way
-const bool INVERT_RIGHT = false;
+const float DEADBAND = 0.05f;   // ignore stick noise near centre
+const float STEER_GAIN = 1.0f;  // lower = gentler turning
 
 // throttle, steering: 1000-2000 us (1500 = centre)
 void mixer(float throttle, float steering) {
 
+  float t;
+  float s;
+
   // 1000-2000 -> -1.0 ... +1.0
-  float t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
-  float s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+  // upright - forwards
+  if (ch[6] == 1000 && RP < roll_flip) {
+    t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+    s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+  }
+
+  // upright - backwards
+  if (ch[6] == 2000 && RP < roll_flip) {
+    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN) * -1;
+  }
+
+  // upsidedown - forwards
+  if (ch[6] == 1000 && RP > roll_flip) {
+    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+    s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+  }
+
+  // upsidedown - backwards
+  if (ch[6] == 2000 && RP > roll_flip) {
+    t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN) * -1;
+  }
 
   // Differential mix
   float left = t + s;
@@ -29,9 +51,6 @@ void mixer(float throttle, float steering) {
     left /= peak;
     right /= peak;
   }
-
-  if (INVERT_LEFT) left = -left;
-  if (INVERT_RIGHT) right = -right;
 
   // -1.0 ... +1.0 -> 1000-2000 us
   drive_esc(1500 + (int)lroundf(left * 500.0f), 1500 + (int)lroundf(right * 500.0f));

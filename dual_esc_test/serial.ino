@@ -73,7 +73,7 @@ void serial_debug(int message_type) {
         esc1.current(),
         esc1.temperatureC(),
         (esc1.rpm() / gearbox_ratio1),
-        (M_PI * (wheel_diamiter1 / 1000) * (esc1.rpm() / gearbox_ratio1) * .06));
+        (3.1415 * (wheel_diamiter1 / 1000) * (esc1.rpm() / gearbox_ratio1) * .06));
 
       auto &s2 = esc2.stats();
 
@@ -108,7 +108,7 @@ void serial_debug(int message_type) {
         esc2.current(),
         esc2.temperatureC(),
         (esc2.rpm() / gearbox_ratio2),
-        (M_PI * (wheel_diamiter1 / 1000) * (esc2.rpm() / gearbox_ratio2) * .06));
+        (3.1415 * (wheel_diamiter1 / 1000) * (esc2.rpm() / gearbox_ratio2) * .06));
 
       Serial.print(" link: ");
       Serial.print(crsf.isLinkUp() ? "UP" : "DOWN");
@@ -123,7 +123,9 @@ void serial_debug(int message_type) {
         Serial.print(" ");
         Serial.print(ch[i]);
       }
-      Serial.println("");
+      Serial.println(" ");
+      Serial.println(RP);
+
       Serial.println("");
     }
   }

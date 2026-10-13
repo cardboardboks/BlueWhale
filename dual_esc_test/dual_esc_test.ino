@@ -3,7 +3,6 @@
 #include <SPI.h>
 #include <BlockNot.h>
 #include <AlfredoDShot.h>
-#include <math.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "Wire.h"
@@ -371,9 +370,11 @@ void setup() {
 }
 
 void loop() {
+  
   crsf_rx();
   mixer(ch[1], ch[2]);
   crsf_tx();
+  drive_logic();
   serial_debug(2);
 
 
