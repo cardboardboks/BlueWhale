@@ -21,8 +21,8 @@
 #define TELEM_INTERVAL_MS 100
 
 // Add near the top with the other config
-IPAddress local_IP(192, 168, 10, 1);   // The ESP32's address
-IPAddress gateway(192, 168, 10, 1);    // Same as local_IP for an AP
+IPAddress local_IP(192, 168, 10, 1);  // The ESP32's address
+IPAddress gateway(192, 168, 10, 1);   // Same as local_IP for an AP
 IPAddress subnet(255, 255, 255, 0);
 
 #define SDA_PIN 8
@@ -308,7 +308,7 @@ void setup() {
 
   WiFi.mode(WIFI_AP);
 
-    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
     Serial.println("Failed to configure AP IP address");
   }
 
@@ -317,7 +317,7 @@ void setup() {
 
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
-  
+
   server.on("/", handleRoot);
   server.begin();
 
