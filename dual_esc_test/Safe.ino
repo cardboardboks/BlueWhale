@@ -8,6 +8,8 @@ void pre_arm_safe() {
   while (safe_switch == 0 || safe_sticks == 0 || safe_link == 0) {
     crsf_rx();
     drive_esc(0, 0);
+    led(2);
+    serial_debug(1);
 
     if (ch[3] == 1000) {
       safe_switch = 1;
@@ -26,7 +28,5 @@ void pre_arm_safe() {
     } else {
       safe_link = 0;
     }
-
-    serial_debug(1);
   }
 }

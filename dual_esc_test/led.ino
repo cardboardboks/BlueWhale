@@ -1,48 +1,66 @@
 // leds
-// when auto up is off: all purple (stabilization not avalible)
 
-// when auto up is active: upper leds show the status and that it is the top
-// when auto up is active: lower leds always red
-// solid colour: drive forwad
-// blinking colour: drive backwards
-// stabilixation off: upper green
-// stabilixation on: upper white
+// 1 all blinking yellow/black: booting
+// 2 all blinking orange/white: waitng pre arm
+// 3 all rainbow: vechile safe
+// 4 all fast blinking red/black: rc failsafe
 
-// all fast flash yellow: booting
-// all fast flash orage: waitng pre arm
-// all fast flash red: rc failsafe
-int r = 0;
-int g = 0;
-int b = 0;
+//  when auto up is active: upper leds show the status and that it is the top
+//  when auto up is active: lower leds always red
+// 5 stabilization off, drive forward: solid green
+// 6 stabilization off, drive backwards: blinking green
+// 7 stabilization on, drive forward: solid white
+// 8 stabilization on, drive backwards: blinking white
 
-void run_led() {
-  if (led_freq.TRIGGERED) {
-    leds[0] = CRGB(255, 255, 255);  // R, G, B
-    leds[1] = CRGB(255, 255, 255);  // R, G, B
-    showSPI(250);
-  }
-}
+// 9 when auto up is off: all purple (stabilization not avalible)
 
-void set_led(int i) {
+// defual to police if everything elese has failed
 
-  if (i == 1) {
-    r = 0;
-    g = 0;
-    b = 0;
+// leds[0] = CRGB::Yellow;
+// leds[1] = CRGB::Yellow;
+
+uint8_t ratio = 0;
+
+void led(int led_type) {
+
+  // 1 all blinking yellow: booting
+  if (led_type == 1) {
+    ratio = beatsin8(100, 0, 255);
+    CRGB currentColor = blend(CRGB::Yellow, CRGB::Black, ratio);
+    leds[0] = currentColor;
+    leds[1] = currentColor;
+
+    // 2 all blinking orange: waitng pre arm
+  } else if (led_type == 2) {
+    ratio = beatsin8(100, 0, 255);
+    CRGB currentColor = blend(CRGB::Orange, CRGB::White, ratio);
+    leds[0] = currentColor;
+    leds[1] = currentColor;
+
+    // 3 all rainbow: vechile safe
+  } else if (led_type == 3) {
+    static uint8_t hue = 0;
+    fill_rainbow(leds, NUM_LEDS, hue++, 7);
+
+    // 4 all fast blinking red: rc failsafe
+  } else if (led_type == 4) {
+    ratio = beatsin8(200, 0, 255);
+    CRGB currentColor = blend(CRGB::Red, CRGB::Black, ratio);
+    leds[0] = currentColor;
+    leds[1] = currentColor;
+
+  } else if (led_type == 5) {
+
+  } else if (led_type == 6) {
+
+  } else if (led_type == 7) {
+
+  } else if (led_type == 8) {
+
+  } else if (led_type == 9) {
+
+  } else {
   }
-  if (i == 2) {
-    r = 255;
-    g = 165;
-    b = 0;
-  }
-  if (i == 3) {
-    r = 255;
-    g = 255;
-    b = 0;
-  }
-  if (i == 4) {
-    r = 0;
-    g = 0;
-    b = 0;
-  }
+
+  showSPI(255);
 }

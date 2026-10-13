@@ -1,3 +1,12 @@
+// ch1 throttle - analog
+// ch2 steering - analog
+// ch3 arming - disared/armed
+// ch4 auto up - on/off/off
+// ch5 stabilization - on/off/off
+// ch6 reverse - forward/backwards
+// ch7 n/a
+// ch8 n/a
+
 const float DEADBAND = 0.05f;    // ignore stick noise near centre
 const float STEER_GAIN = 1.0f;   // lower = gentler turning
 const bool INVERT_LEFT = false;  // flip if a motor spins the wrong way

@@ -294,9 +294,7 @@ void setup() {
 
   // configure leds
   SPI.begin(PIN_SCK, -1, PIN_MOSI, -1);
-  leds[0] = CRGB(255, 255, 0);  // R, G, B
-  leds[1] = CRGB(255, 255, 0);  // R, G, B
-  showSPI(250);
+  led(1);
 
   // configure escs
   boot_esc();
@@ -326,11 +324,6 @@ void setup() {
   Serial.println("Servers initialized smoothly.");
 
   boot_crsf();
-
-  SPI.begin(PIN_SCK, -1, PIN_MOSI, -1);
-  leds[0] = CRGB(255, 165, 0);  // R, G, B
-  leds[1] = CRGB(255, 165, 0);  // R, G, B
-  showSPI(250);
 
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
@@ -381,7 +374,6 @@ void loop() {
   crsf_rx();
   mixer(ch[1], ch[2]);
   crsf_tx();
-  run_led();
   serial_debug(2);
 
 

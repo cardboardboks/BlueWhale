@@ -17,7 +17,9 @@ void boot_esc() {
   gpio_config(&cfg);
   gpio_set_level((gpio_num_t)PIN_ESC2, 0);
 
-  delay(2500);
+  for (unsigned long start = millis(); millis() - start < esc_arm_duration / 2;) {
+    led(1);
+  }
 
   // create esc object, set up and bind to pin
   // esc#, pin bound to, dshot freq, bidirectinal, pol count
@@ -26,7 +28,7 @@ void boot_esc() {
 
   // wait for ESC to boot before enabling EDT
   for (unsigned long start = millis(); millis() - start < esc_arm_duration;) {
-    // add led waiting colour
+    led(1);
     drive_esc(0, 0);
   }
 

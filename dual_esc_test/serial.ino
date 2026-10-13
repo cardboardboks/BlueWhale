@@ -1,8 +1,20 @@
+int safe_telem = 0;
+int serial_telem = 0;
+
 void serial_debug(int message_type) {
+
+  if (message_type == 1) {
+    safe_telem = 1;
+  }
+  if (message_type == 2) {
+    serial_telem = 1;
+  }
+
   // print a serial frame every .5s
   if (serial_freq.TRIGGERED) {
 
-    if (message_type == 1) {
+    if (safe_telem == 1) {
+      safe_telem = 0;
 
       Serial.println(" Pre Arm Safe Check");
 
@@ -23,7 +35,8 @@ void serial_debug(int message_type) {
       Serial.println("");
     }
 
-    if (message_type == 2) {
+    if (serial_telem == 1) {
+      serial_telem = 0;
 
       Serial.println(" Thr:  | Volt:  | Cur: | Tmp: | RPM: | Speed: ");
 

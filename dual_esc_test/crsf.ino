@@ -20,6 +20,12 @@ void crsf_rx() {
       ch[i] = 2000;
     }
   }
+
+  if (crsf.isLinkUp() == 0) {
+    led(4);
+  } else if (ch[3] == 1000) {
+    led(3);
+  }
 }
 
 void crsf_tx() {
