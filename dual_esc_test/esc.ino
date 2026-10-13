@@ -39,14 +39,16 @@ void boot_esc() {
 
 void drive_esc(int thr1, int thr2) {
 
+  throttle1 = thr1;
+  throttle2 = thr2;
+
   if (thr1 == 0) {
+    thr1 = 0;
+  } else if (thr1 == 1500) {
     thr1 = 0;
   } else {
     if (thr1 < 1500) {
       thr1 = map(thr1, 1000, 1499, 1047, 48);
-    }
-    if (thr1 == 1500) {
-      thr1 = 0;
     }
     if (thr1 > 1500) {
       thr1 = map(thr1, 1501, 2000, 1049, 2047);
@@ -55,12 +57,11 @@ void drive_esc(int thr1, int thr2) {
 
   if (thr2 == 0) {
     thr2 = 0;
+  } else if (thr2 == 1500) {
+    thr2 = 0;
   } else {
     if (thr2 < 1500) {
       thr2 = map(thr2, 1000, 1499, 1047, 48);
-    }
-    if (thr2 == 1500) {
-      thr2 = 0;
     }
     if (thr2 > 1500) {
       thr2 = map(thr2, 1501, 2000, 1049, 2047);
@@ -87,9 +88,6 @@ void drive_esc(int thr1, int thr2) {
       thr1 = 0;
       thr2 = 0;
     }
-
-    throttle1 = thr1;
-    throttle2 = thr2;
 
     esc1.send(thr1);
     esc2.send(thr2);

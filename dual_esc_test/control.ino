@@ -56,8 +56,6 @@ void mixer(float throttle, float steering) {
   drive_esc(1500 + (int)lroundf(left * 500.0f), 1500 + (int)lroundf(right * 500.0f));
 }
 
-
-
 // Rescale so output still reaches full range after the deadband
 static float deadband(float v) {
   if (fabs(v) < DEADBAND) return 0.0f;

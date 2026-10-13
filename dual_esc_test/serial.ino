@@ -42,33 +42,9 @@ void serial_debug(int message_type) {
 
       auto &s1 = esc1.stats();
 
-      if (((throttle1 - 1042) / 10 < 10) && ((throttle2 - 1042) / 10 > -10)) {
-        Serial.print(" ");
-      }
-
-      if (((throttle1 - 1042) / 10 != 100) || ((throttle2 - 1042) / 10 != -10)) {
-        Serial.print(" ");
-      }
-
-      if ((throttle1 - 1042) / 10 > 0) {
-        Serial.print("+");
-      }
-
-      if ((throttle1 - 1042) / 10 == 0) {
-        Serial.print(" ");
-      }
-
-      if ((throttle1 - 1042) / 10 == -104) {
-        throttle1 = 0;
-      } else if ((throttle1 - 1042) / 10 < 0) {
-        throttle1 = (((throttle1 - 1042) / 10) + 100) * -1;
-      } else {
-        throttle1 = (throttle1 - 1042) / 10;
-      }
-
       Serial.printf(
         "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
-        throttle1,
+        (throttle1 - 1500) / 5,
         esc1.voltage(),
         esc1.current(),
         esc1.temperatureC(),
@@ -77,33 +53,9 @@ void serial_debug(int message_type) {
 
       auto &s2 = esc2.stats();
 
-      if (((throttle2 - 1042) / 10 < 10) && ((throttle2 - 1042) / 10 > -10)) {
-        Serial.print(" ");
-      }
-
-      if (((throttle2 - 1042) / 10 != 100) || ((throttle2 - 1042) / 10 != -10)) {
-        Serial.print(" ");
-      }
-
-      if ((throttle2 - 1042) / 10 > 0) {
-        Serial.print("+");
-      }
-
-      if ((throttle2 - 1042) / 10 == 0) {
-        Serial.print(" ");
-      }
-
-      if ((throttle2 - 1042) / 10 == -104) {
-        throttle2 = 0;
-      } else if ((throttle2 - 1042) / 10 < 0) {
-        throttle2 = (((throttle2 - 1042) / 10) + 100) * -1;
-      } else {
-        throttle2 = (throttle2 - 1042) / 10;
-      }
-
       Serial.printf(
         "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
-        throttle2,
+        (throttle2 - 1500) / 5,
         esc2.voltage(),
         esc2.current(),
         esc2.temperatureC(),
