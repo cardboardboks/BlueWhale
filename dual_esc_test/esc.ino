@@ -41,11 +41,10 @@ void drive_esc(int thr1, int thr2) {
     thr1 = 0;
   } else {
     if (thr1 < 1500) {
-      thr1 = map(thr1, 1000, 1499, 48, 1047);
+      thr1 = map(thr1, 1000, 1499, 1047, 48);
     }
     if (thr1 == 1500) {
-      //thr1 = 0;
-      thr1 = 1048;
+      thr1 = 0;
     }
     if (thr1 > 1500) {
       thr1 = map(thr1, 1501, 2000, 1049, 2047);
@@ -56,11 +55,10 @@ void drive_esc(int thr1, int thr2) {
     thr2 = 0;
   } else {
     if (thr2 < 1500) {
-      thr2 = map(thr2, 1000, 1499, 48, 1047);
+      thr2 = map(thr2, 1000, 1499, 1047, 48);
     }
     if (thr2 == 1500) {
-      //thr2 = 0;
-      thr2 = 1048;
+      thr2 = 0;
     }
     if (thr2 > 1500) {
       thr2 = map(thr2, 1501, 2000, 1049, 2047);

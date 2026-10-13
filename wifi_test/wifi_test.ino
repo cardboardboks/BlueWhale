@@ -5,6 +5,11 @@
 #include <ArduinoJson.h>
 #include "esp_wifi.h"
 
+// Add near the top with the other config
+IPAddress local_IP(192, 168, 10, 1);  // The ESP32's address
+IPAddress gateway(192, 168, 10, 1);   // Same as local_IP for an AP
+IPAddress subnet(255, 255, 255, 0);
+
 // 1. Assign Access Point Network Credentials
 const char *ssid = "Whale";
 const char *password = "Whale#1234";
@@ -17,8 +22,8 @@ WebSocketsServer webSocket = WebSocketsServer(81);
 int liveCounter = 0;
 float temperature = 24.5;
 float humidity = 55.0;
-int rssi = -127; 
-int rssiPercentage = 0; // New variable to store 0-100% scale
+int rssi = -127;
+int rssiPercentage = 0;  // New variable to store 0-100% scale
 float batteryVoltage = 4.2;
 String statusString = "Optimal";
 
@@ -26,10 +31,10 @@ unsigned long lastUpdate = 0;
 
 // Helper function to scale dBm to a reliable 0-100% signal metric
 int getSignalQuality(int dbm) {
-  if (dbm == -127) return 0; // Disconnected state
-  if (dbm >= -50)  return 100; // Excellent signal is capped at 100%
+  if (dbm == -127) return 0;   // Disconnected state
+  if (dbm >= -50) return 100;  // Excellent signal is capped at 100%
   if (dbm <= -100) return 0;   // Unusable signal is capped at 0%
-  
+
   // Linearly map the range [-100, -50] onto [0, 100]
   return map(dbm, -100, -50, 0, 100);
 }
@@ -127,7 +132,7 @@ String getSerializedData() {
   doc["counter"] = liveCounter;
   doc["temp"] = temperature;
   doc["hum"] = humidity;
-  doc["rssi_raw"] = rssi;         // Keeping raw data as fallback
+  doc["rssi_raw"] = rssi;            // Keeping raw data as fallback
   doc["rssi_pct"] = rssiPercentage;  // Clean 0-100% scaling
   doc["bat"] = batteryVoltage;
   doc["status"] = statusString;
@@ -154,8 +159,15 @@ void setup() {
   Serial.println("\nConfiguring Access Point...");
 
   WiFi.mode(WIFI_AP);
+
+  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+    Serial.println("Failed to configure AP IP address");
+  }
   WiFi.softAP(ssid, password);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
+  Serial.print("AP IP address: ");
+  Serial.println(WiFi.softAPIP());
 
   server.on("/", handleRoot);
   server.begin();
@@ -171,26 +183,26 @@ void loop() {
 
   if (millis() - lastUpdate > 100) {
     lastUpdate = millis();
-    
+
     // Native Station AP RSSI Logic
     wifi_sta_list_t wifi_sta_list;
     esp_wifi_ap_get_sta_list(&wifi_sta_list);
-    
+
     if (wifi_sta_list.num > 0) {
-      rssi = wifi_sta_list.sta[0].rssi; // Note: added missing array index '[0]' to target first device
+      rssi = wifi_sta_list.sta[0].rssi;  // Note: added missing array index '[0]' to target first device
     } else {
-      rssi = -127; 
+      rssi = -127;
     }
-    
+
     // Scale the signal
     rssiPercentage = getSignalQuality(rssi);
 
     // Core Variable Simulations
     liveCounter++;
-    temperature += random(-10, 11) / 100.0;    
-    humidity += random(-20, 21) / 100.0;       
-    batteryVoltage = 3.7 + (sin(millis() / 5000.0) * 0.5); 
-    
+    temperature += random(-10, 11) / 100.0;
+    humidity += random(-20, 21) / 100.0;
+    batteryVoltage = 3.7 + (sin(millis() / 5000.0) * 0.5);
+
     if (liveCounter % 50 == 0) {
       statusString = (statusString == "Optimal") ? "Warning" : "Optimal";
     }

@@ -20,6 +20,11 @@
 #define PIN_TX 21
 #define TELEM_INTERVAL_MS 100
 
+// Add near the top with the other config
+IPAddress local_IP(192, 168, 10, 1);   // The ESP32's address
+IPAddress gateway(192, 168, 10, 1);    // Same as local_IP for an AP
+IPAddress subnet(255, 255, 255, 0);
+
 #define SDA_PIN 8
 #define SCL_PIN 9
 #define INT_PIN 10
@@ -236,6 +241,8 @@ int wheel_diamiter1 = 101;  // in mm
 int wheel_diamiter2 = 101;  // in mm
 BlockNot dshot_freq(1000, MICROSECONDS);
 
+BlockNot dshot_telem_freq(1000);
+
 const bool SEND_EDT = true;  // run once true, once false
 
 BlockNot serial_freq(500);
@@ -300,9 +307,17 @@ void setup() {
   Serial.println("Whale booted");
 
   WiFi.mode(WIFI_AP);
+
+    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+    Serial.println("Failed to configure AP IP address");
+  }
+
   WiFi.softAP(ssid, password);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
+  Serial.print("AP IP address: ");
+  Serial.println(WiFi.softAPIP());
+  
   server.on("/", handleRoot);
   server.begin();
 

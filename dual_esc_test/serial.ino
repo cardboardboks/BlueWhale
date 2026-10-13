@@ -44,13 +44,23 @@ void serial_debug(int message_type) {
       if ((throttle1 - 1042) / 10 == 0) {
         Serial.print(" ");
       }
-      Serial.printf("%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
-                    (throttle1 - 1042) / 10,
-                    esc1.voltage(),
-                    esc1.current(),
-                    esc1.temperatureC(),
-                    (esc1.rpm() / gearbox_ratio1),
-                    (M_PI * (wheel_diamiter1 / 1000) * (esc1.rpm() / gearbox_ratio1) * .06));
+
+      if ((throttle1 - 1042) / 10 == -104) {
+        throttle1 = 0;
+      } else if ((throttle1 - 1042) / 10 < 0) {
+        throttle1 = (((throttle1 - 1042) / 10) + 100) * -1;
+      } else {
+        throttle1 = (throttle1 - 1042) / 10;
+      }
+
+      Serial.printf(
+        "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
+        throttle1,
+        esc1.voltage(),
+        esc1.current(),
+        esc1.temperatureC(),
+        (esc1.rpm() / gearbox_ratio1),
+        (M_PI * (wheel_diamiter1 / 1000) * (esc1.rpm() / gearbox_ratio1) * .06));
 
       auto &s2 = esc2.stats();
 
@@ -70,13 +80,22 @@ void serial_debug(int message_type) {
         Serial.print(" ");
       }
 
-      Serial.printf("%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
-                    (throttle2 - 1042) / 10,
-                    esc2.voltage(),
-                    esc2.current(),
-                    esc2.temperatureC(),
-                    (esc2.rpm() / gearbox_ratio2),
-                    (M_PI * (wheel_diamiter1 / 1000) * (esc2.rpm() / gearbox_ratio2) * .06));
+      if ((throttle2 - 1042) / 10 == -104) {
+        throttle2 = 0;
+      } else if ((throttle2 - 1042) / 10 < 0) {
+        throttle2 = (((throttle2 - 1042) / 10) + 100) * -1;
+      } else {
+        throttle2 = (throttle2 - 1042) / 10;
+      }
+
+      Serial.printf(
+        "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
+        throttle2,
+        esc2.voltage(),
+        esc2.current(),
+        esc2.temperatureC(),
+        (esc2.rpm() / gearbox_ratio2),
+        (M_PI * (wheel_diamiter1 / 1000) * (esc2.rpm() / gearbox_ratio2) * .06));
 
       Serial.print(" link: ");
       Serial.print(crsf.isLinkUp() ? "UP" : "DOWN");
