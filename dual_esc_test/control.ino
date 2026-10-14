@@ -16,29 +16,40 @@ void mixer(float throttle, float steering) {
   float t;
   float s;
 
-  // 1000-2000 -> -1.0 ... +1.0
-  // upright - forwards
-  if (ch[6] == 1000 && RP < roll_flip) {
+  // scale and constrain inputs
+  // impliment logic for auto up and reverese
+
+  // gyro stuff will go here also
+
+  // force only normal operation when imu is disabled
+  if (ch[4] != 1000) {
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
-  }
+  } else {
 
-  // upright - backwards
-  if (ch[6] == 2000 && RP < roll_flip) {
-    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
-    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN) * -1;
-  }
+    // upright - forwards
+    if (ch[6] == 1000 && RP < roll_flip) {
+      t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+      s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+    }
 
-  // upsidedown - forwards
-  if (ch[6] == 1000 && RP > roll_flip) {
-    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
-    s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
-  }
+    // upright - backwards
+    if (ch[6] == 2000 && RP < roll_flip) {
+      t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+      s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
+    }
 
-  // upsidedown - backwards
-  if (ch[6] == 2000 && RP > roll_flip) {
-    t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
-    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN) * -1;
+    // upsidedown - forwards
+    if (ch[6] == 1000 && RP > roll_flip) {
+      t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+      s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+    }
+
+    // upsidedown - backwards
+    if (ch[6] == 2000 && RP > roll_flip) {
+      t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+      s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
+    }
   }
 
   // Differential mix
@@ -52,7 +63,7 @@ void mixer(float throttle, float steering) {
     right /= peak;
   }
 
-  // -1.0 ... +1.0 -> 1000-2000 us
+  // scale back to standard rc range 1000-2000
   drive_esc(1500 + (int)lroundf(left * 500.0f), 1500 + (int)lroundf(right * 500.0f));
 }
 

@@ -28,7 +28,7 @@ IPAddress subnet(255, 255, 255, 0);
 #define SCL_PIN 9
 #define INT_PIN 10
 
-#define NUM_LEDS 30
+#define NUM_LEDS 12
 #define PIN_SCK 6   // unused by the strip, but SPI needs one
 #define PIN_MOSI 7  // connect to the strip's DIN (check your board's pinout)
 #define SPI_HZ 2400000
@@ -370,11 +370,11 @@ void setup() {
 }
 
 void loop() {
-  
+
   crsf_rx();
   mixer(ch[1], ch[2]);
   crsf_tx();
-  drive_logic();
+  led_logic();
   serial_debug(2);
 
 

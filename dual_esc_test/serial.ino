@@ -49,7 +49,7 @@ void serial_debug(int message_type) {
         esc1.current(),
         esc1.temperatureC(),
         (esc1.rpm() / gearbox_ratio1),
-        (3.1415 * (wheel_diamiter1 / 1000) * (esc1.rpm() / gearbox_ratio1) * .06));
+        (wheel_diamiter1 / 10) * (esc1.rpm() / gearbox_ratio1) * 0.001885);
 
       auto &s2 = esc2.stats();
 
@@ -60,7 +60,7 @@ void serial_debug(int message_type) {
         esc2.current(),
         esc2.temperatureC(),
         (esc2.rpm() / gearbox_ratio2),
-        (3.1415 * (wheel_diamiter1 / 1000) * (esc2.rpm() / gearbox_ratio2) * .06));
+        (wheel_diamiter2 / 10) * (esc2.rpm() / gearbox_ratio2) * 0.001885);
 
       Serial.print(" link: ");
       Serial.print(crsf.isLinkUp() ? "UP" : "DOWN");

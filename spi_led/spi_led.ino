@@ -48,5 +48,5 @@ void loop() {
   static uint8_t hue = 0;
   fill_rainbow(leds, NUM_LEDS, hue++, 7);
   showSPI(200);
- // delay(2);
+  // delay(2);
 }

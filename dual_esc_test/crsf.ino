@@ -4,7 +4,7 @@ void boot_crsf() {
 
   if (!crsfSerial)
     while (1) Serial.println("Invalid crsfSerial configuration");
-  crsf.begin(crsfSerial);  // defaults to CRSF_ADDRESS_FLIGHT_CONTROLLER
+  crsf.begin(crsfSerial);
 }
 
 void crsf_rx() {
