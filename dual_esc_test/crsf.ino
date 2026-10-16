@@ -30,9 +30,7 @@ void crsf_tx() {
   float remaining;
   crsf_sensor_battery_t crsfBatt = { 0 };
 
-  if (millis() - lastTelemMs >= TELEM_INTERVAL_MS) {
-    lastTelemMs = millis();
-
+  if (crsf_telem_freq.TRIGGERED) {
     crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));  //Volts
     crsfBatt.current = htobe16((uint16_t)(esc2.voltage() * 10.0));  //Amps
     crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));   //mAh (24 bit field, max 16777215mAh)

@@ -64,7 +64,7 @@ void mixer(float throttle, float steering) {
   }
 
   // scale back to standard rc range 1000-2000
-  drive_esc(1500 + (int)lroundf(left * 500.0f), 1500 + (int)lroundf(right * 500.0f));
+  drive1_pwm = 1500 + (int)lroundf(left * 500.0f) drive2_pwm = 1500 + (int)lroundf(right * 500.0f)
 }
 
 // Rescale so output still reaches full range after the deadband
