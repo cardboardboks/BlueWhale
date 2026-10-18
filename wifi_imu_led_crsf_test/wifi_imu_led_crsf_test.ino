@@ -206,7 +206,7 @@ float ypr[3];
 bool dmpReady = false;
 
 void setup() {
-  // Serial.begin(921600);
+   Serial.begin(115200);
 
   crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
   if (!crsfSerial)

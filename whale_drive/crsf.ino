@@ -1,12 +1,3 @@
-void boot_crsf() {
-
-  crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
-
-  if (!crsfSerial)
-    while (1) Serial.println("Invalid crsfSerial configuration");
-  crsf.begin(crsfSerial);
-}
-
 void crsf_rx() {
 
   crsf.update();

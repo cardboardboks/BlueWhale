@@ -1,13 +1,3 @@
-// MySketch/
-// ├── MySketch.ino
-// ├── config.h        ← constants, pins, settings
-// ├── globals.h       ← shared variables (declarations)
-// └── globals.cpp     ← shared variables (definitions)
-
-// make this bit tidier 
-#include "config.h"
-#include "globals.h"
-
 // libs
 #include <Arduino.h>
 #include <SPI.h>
@@ -138,7 +128,43 @@ void setup() {
   // led(1);
 
   // configure escs, must be done very close to first. check esc lib documenation for details
-  boot_esc();
+  // open drain so we only pull down, and via the IDF rather than pinMode() so
+  // the Arduino peripheral manager does not claim the pad ahead of the RMT
+  // driver in begin().
+
+  // running this code pulled from the .cpp to avoid waiting 2.5s esc if it were to call the funtion twice
+  gpio_config_t cfg = {};
+  cfg.pin_bit_mask = 1ULL << PIN_ESC1;
+  cfg.mode = GPIO_MODE_OUTPUT_OD;
+  cfg.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&cfg);
+  gpio_set_level((gpio_num_t)PIN_ESC1, 0);
+
+  cfg.pin_bit_mask = 1ULL << PIN_ESC2;
+  cfg.mode = GPIO_MODE_OUTPUT_OD;
+  cfg.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&cfg);
+  gpio_set_level((gpio_num_t)PIN_ESC2, 0);
+
+  // wait for boot and set leds to booting colour
+  for (unsigned long start = millis(); millis() - start < esc_arm_duration / 2;) {
+    //   led(1);
+  }
+
+  // create esc object, set up and bind to pin
+  // esc#, pin bound to, dshot freq, bidirectinal, pol count
+  esc1.begin(PIN_ESC1, DSHOT600, true, MOTOR1_POLES);
+  esc2.begin(PIN_ESC2, DSHOT600, true, MOTOR2_POLES);
+
+  // wait for ESC to boot before enabling EDT
+  for (unsigned long start = millis(); millis() - start < esc_arm_duration;) {
+    //  led(1);
+    drive_esc(0, 0);
+  }
+
+  // enable EDT
+  esc1.command(DSHOT_CMD_EDT_ENABLE);
+  esc2.command(DSHOT_CMD_EDT_ENABLE);
 
   // configure serial
   Serial.begin(115200);
@@ -147,8 +173,53 @@ void setup() {
   Serial.println("Whale booted");
 
   // configure rx and imu
-  boot_crsf();
-  // boot_imu();
+  crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
+
+  if (!crsfSerial)
+    while (1) Serial.println("Invalid crsfSerial configuration");
+  crsf.begin(crsfSerial);
+
+
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);
+
+  for (int RPthisReading = 0; RPthisReading < RPnumReadings; RPthisReading++) {
+    RPreadings[RPthisReading] = 0;
+  }
+  for (int YthisReading = 0; YthisReading < YnumReadings; YthisReading++) {
+    Yreadings[YthisReading] = 0;
+  }
+
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    Serial.println("MPU6050 not found - check wiring/address");
+    //  while (1) delay(1000);
+  }
+
+  uint8_t devStatus = mpu.dmpInitialize();  // uploads DMP firmware (~1.9 KB)
+
+  // supply your own gyro offsets here, scaled for min sensitivity
+  mpu.setXGyroOffset(-234);
+  mpu.setYGyroOffset(24);
+  mpu.setZGyroOffset(-9);
+  mpu.setXAccelOffset(-698);
+  mpu.setYAccelOffset(476);
+  mpu.setZAccelOffset(2538);
+
+  if (devStatus == 0) {
+    // mpu.CalibrateAccel(6);  // keep the sensor flat and still during this
+    // mpu.CalibrateGyro(6);
+    mpu.setDMPEnabled(true);
+    pinMode(INT_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(INT_PIN), dmpDataReady, RISING);
+    dmpReady = true;
+    Serial.println("DMP ready");
+  } else {
+    // 1 = memory load failed, 2 = DMP config update failed
+    Serial.printf("DMP init failed (code %d)\n", devStatus);
+    // while (1) delay(1000);
+  }
 
   //start the pre arm safe checks
   pre_arm_safe();
@@ -159,7 +230,7 @@ void loop() {
   // read rx data
   crsf_rx();
   // read imu data
-  // imu();
+  imu();
   // invoke the mixer
   mixer(ch[1], ch[2]);
   // process stabilization
