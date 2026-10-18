@@ -1,3 +1,13 @@
+// MySketch/
+// ├── MySketch.ino
+// ├── config.h        ← constants, pins, settings
+// ├── globals.h       ← shared variables (declarations)
+// └── globals.cpp     ← shared variables (definitions)
+
+// make this bit tidier 
+#include "config.h"
+#include "globals.h"
+
 // libs
 #include <Arduino.h>
 #include <SPI.h>
@@ -138,7 +148,7 @@ void setup() {
 
   // configure rx and imu
   boot_crsf();
-  boot_imu();
+  // boot_imu();
 
   //start the pre arm safe checks
   pre_arm_safe();
@@ -149,7 +159,7 @@ void loop() {
   // read rx data
   crsf_rx();
   // read imu data
-  imu();
+  // imu();
   // invoke the mixer
   mixer(ch[1], ch[2]);
   // process stabilization

@@ -3,8 +3,6 @@ void boot_imu() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
 
-
-
   for (int RPthisReading = 0; RPthisReading < RPnumReadings; RPthisReading++) {
     RPreadings[RPthisReading] = 0;
   }
