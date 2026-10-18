@@ -11,7 +11,7 @@ void crsf_rx() {
 
   crsf.update();
 
-  for (int i = 1; i <= 8; i++) {
+  for (int i = 0; i <= 8; i++) {
     ch[i] = crsf.getChannel(i);
     if (ch[i] < 1000) {
       ch[i] = 1000;

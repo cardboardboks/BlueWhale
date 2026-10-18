@@ -18,10 +18,6 @@
 
 // defual to police if everything elese has failed
 
-// reminder code
-// leds[0] = CRGB::Yellow;
-// leds[1] = CRGB::Yellow;
-
 void led(int led_type) {
 
   if (led_type == 3) {

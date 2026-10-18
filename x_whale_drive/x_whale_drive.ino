@@ -1,13 +1,3 @@
-// MySketch/
-// ├── MySketch.ino
-// ├── config.h        ← constants, pins, settings
-// ├── globals.h       ← shared variables (declarations)
-// └── globals.cpp     ← shared variables (definitions)
-
-// make this bit tidier 
-#include "config.h"
-#include "globals.h"
-
 // libs
 #include <Arduino.h>
 #include <SPI.h>
@@ -16,6 +6,7 @@
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "Wire.h"
+// make sure this is 2.3
 #include <AlfredoCRSF.h>
 #include <HardwareSerial.h>
 
@@ -148,7 +139,7 @@ void setup() {
 
   // configure rx and imu
   boot_crsf();
-  // boot_imu();
+  boot_imu();
 
   //start the pre arm safe checks
   pre_arm_safe();
@@ -159,7 +150,7 @@ void loop() {
   // read rx data
   crsf_rx();
   // read imu data
-  // imu();
+  imu();
   // invoke the mixer
   mixer(ch[1], ch[2]);
   // process stabilization

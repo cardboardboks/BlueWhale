@@ -76,8 +76,11 @@ void serial_debug(int message_type) {
         Serial.print(ch[i]);
       }
       Serial.println(" ");
-      Serial.println(RP);
+      Serial.print(RP);
+      Serial.print("\t");
+      Serial.print(Y);
 
+      Serial.println("");
       Serial.println("");
     }
   }
