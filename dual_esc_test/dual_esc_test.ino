@@ -1,5 +1,5 @@
 // libs
-#include <FastLED.h>
+#include <Arduino.h>
 #include <SPI.h>
 #include <BlockNot.h>
 #include <AlfredoDShot.h>
@@ -20,10 +20,6 @@
 #define INT_PIN 10
 
 // leds
-#define NUM_LEDS 12
-#define PIN_SCK 6   // unused by the strip, but SPI needs one
-#define PIN_MOSI 7  // connect to the strip's DIN (check your board's pinout)
-#define SPI_HZ 2400000
 
 // imu data
 // dmp orientation
@@ -104,51 +100,19 @@ bool safe_link = 0;
 
 // leds
 // configure leds
-CRGB leds[NUM_LEDS];
-
-static uint8_t txbuf[NUM_LEDS * 9 + 120];  // 9 bytes per LED + reset padding
-// Expand one color byte into 3 SPI bytes (8 bits * 3 = 24 bits)
-static inline void encodeByte(uint8_t v, uint8_t *out) {
-  uint32_t bits = 0;
-  for (int i = 7; i >= 0; i--) {
-    bits = (bits << 3) | ((v >> i) & 1 ? 0b110 : 0b100);
-  }
-  out[0] = bits >> 16;
-  out[1] = bits >> 8;
-  out[2] = bits;
-}
-
-void showSPI(uint8_t brightness = 255) {
-  uint8_t *p = txbuf;
-  for (int i = 0; i < NUM_LEDS; i++) {
-    CRGB c = leds[i];
-    c.nscale8(brightness);
-    encodeByte(c.g, p);
-    p += 3;  // WS2812 order is GRB
-    encodeByte(c.r, p);
-    p += 3;
-    encodeByte(c.b, p);
-    p += 3;
-  }
-  // trailing zeros hold the line low (> 280 us) as the reset latch
-  memset(p, 0, 120);
-
-  SPI.beginTransaction(SPISettings(SPI_HZ, MSBFIRST, SPI_MODE0));
-  SPI.transferBytes(txbuf, nullptr, sizeof(txbuf));
-  SPI.endTransaction();
-}
 
 void setup() {
 
   // configure leds, sneak this in beofre esc's so we can use them to show status
-  SPI.begin(PIN_SCK, -1, PIN_MOSI, -1);
-  led(1);
+  // SPI.begin(PIN_SCK, -1, PIN_MOSI, -1);
+  // led(1);
 
   // configure escs, must be done very close to first. check esc lib documenation for details
   boot_esc();
 
   // configure serial
   Serial.begin(115200);
+  // make sure usb cdc on boot is enabled or this will throw an error
   Serial.setTxTimeoutMs(0);
   Serial.println("Whale booted");
 
@@ -169,7 +133,7 @@ void loop() {
   // invoke the mixer
   mixer(ch[1], ch[2]);
   // process stabilization
-  pid();
+  // pid();
   // send commands to the esc;s
   drive_esc(drive1_pwm, drive2_pwm);
   // send telem over rc link

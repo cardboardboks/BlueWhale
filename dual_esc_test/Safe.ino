@@ -11,7 +11,7 @@ void pre_arm_safe() {
     // force esc's to disarmed
     crsf_rx();
     drive_esc(0, 0);
-    led(2);
+    // led(2);
     serial_debug(1);
 
     // make sure arm switch is off

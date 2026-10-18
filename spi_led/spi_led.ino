@@ -1,52 +1,90 @@
-#include <FastLED.h>
+// Drive WS2812/WS2812B/SK6812 (clockless, single-wire) LEDs from the ESP32 SPI MOSI pin.
+//
+// Trick: run SPI at 3.2 MHz (1 SPI bit = 312.5 ns). Each WS2812 bit is sent as 4 SPI bits:
+//   WS2812 "0"  ->  1000   (~312 ns high, ~937 ns low)
+//   WS2812 "1"  ->  1110   (~937 ns high, ~312 ns low)
+// So every colour byte becomes 4 SPI bytes, and every LED (3 bytes) becomes 12 SPI bytes.
+// Reset/latch = >50 us of low line, sent as a run of zero bytes.
+
+#include <Arduino.h>
 #include <SPI.h>
 
+#define LED_PIN 6  // This becomes the SPI MOSI pin (any GPIO works via the GPIO matrix)
 #define NUM_LEDS 12
-#define PIN_SCK 6   // unused by the strip, but SPI needs one
-#define PIN_MOSI 7  // connect to the strip's DIN (check your board's pinout)
-#define SPI_HZ 2400000
+#define SPI_FREQ 3200000  // 3.2 MHz
 
-CRGB leds[NUM_LEDS];
-static uint8_t txbuf[NUM_LEDS * 9 + 120];  // 9 bytes per LED + reset padding
+// Classic ESP32 uses VSPI; ESP32-S2/S3/C3 use FSPI
+#if defined(CONFIG_IDF_TARGET_ESP32)
+SPIClass ledSPI(VSPI);
+#else
+SPIClass ledSPI(FSPI);
+#endif
 
-// Expand one color byte into 3 SPI bytes (8 bits * 3 = 24 bits)
-static inline void encodeByte(uint8_t v, uint8_t *out) {
-  uint32_t bits = 0;
-  for (int i = 7; i >= 0; i--) {
-    bits = (bits << 3) | ((v >> i) & 1 ? 0b110 : 0b100);
-  }
-  out[0] = bits >> 16;
-  out[1] = bits >> 8;
-  out[2] = bits;
+#define RESET_BYTES 64  // 64 bytes * 8 bits * 312.5 ns = ~160 us of low
+static uint8_t spiBuf[NUM_LEDS * 12 + RESET_BYTES];
+
+struct RGB {
+  uint8_t r, g, b;
+};
+RGB leds[NUM_LEDS];
+
+// Lookup: 2 data bits -> 1 SPI byte (two WS2812 bits = 8 SPI bits)
+static const uint8_t lut[4] = {
+  0b10001000,  // 00
+  0b10001110,  // 01
+  0b11101000,  // 10
+  0b11101110   // 11
+};
+
+void encodeByte(uint8_t v, uint8_t *out) {
+  out[0] = lut[(v >> 6) & 3];
+  out[1] = lut[(v >> 4) & 3];
+  out[2] = lut[(v >> 2) & 3];
+  out[3] = lut[v & 3];
 }
 
-void showSPI(uint8_t brightness = 255) {
-  uint8_t *p = txbuf;
+void showLeds() {
+  uint8_t *p = spiBuf;
   for (int i = 0; i < NUM_LEDS; i++) {
-    CRGB c = leds[i];
-    c.nscale8(brightness);
-    encodeByte(c.g, p);
-    p += 3;  // WS2812 order is GRB
-    encodeByte(c.r, p);
-    p += 3;
-    encodeByte(c.b, p);
-    p += 3;
+    // WS2812 expects GRB order
+    encodeByte(leds[i].g, p);
+    p += 4;
+    encodeByte(leds[i].r, p);
+    p += 4;
+    encodeByte(leds[i].b, p);
+    p += 4;
   }
-  // trailing zeros hold the line low (> 280 us) as the reset latch
-  memset(p, 0, 120);
+  memset(p, 0, RESET_BYTES);  // latch
 
-  SPI.beginTransaction(SPISettings(SPI_HZ, MSBFIRST, SPI_MODE0));
-  SPI.transferBytes(txbuf, nullptr, sizeof(txbuf));
-  SPI.endTransaction();
+  ledSPI.beginTransaction(SPISettings(SPI_FREQ, MSBFIRST, SPI_MODE0));
+  ledSPI.writeBytes(spiBuf, sizeof(spiBuf));
+  ledSPI.endTransaction();
 }
+
+uint8_t hue = 0;
 
 void setup() {
-  SPI.begin(PIN_SCK, -1, PIN_MOSI, -1);
+  // begin(sck, miso, mosi, ss) -> only MOSI is used
+ledSPI.begin(4, -1, LED_PIN, -1);
 }
 
 void loop() {
-  static uint8_t hue = 0;
-  fill_rainbow(leds, NUM_LEDS, hue++, 7);
-  showSPI(200);
-  // delay(2);
+  // Simple rainbow chase
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t h = hue + i * (256 / NUM_LEDS);
+    // quick HSV(h,255,64) -> RGB
+    uint8_t region = h / 43, rem = (h - region * 43) * 6;
+    uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
+    switch (region) {
+      case 0: leds[i] = { v, t, 0 }; break;
+      case 1: leds[i] = { q, v, 0 }; break;
+      case 2: leds[i] = { 0, v, t }; break;
+      case 3: leds[i] = { 0, q, v }; break;
+      case 4: leds[i] = { t, 0, v }; break;
+      default: leds[i] = { v, 0, q }; break;
+    }
+  }
+  hue++;
+  delay(10);
+  showLeds();
 }

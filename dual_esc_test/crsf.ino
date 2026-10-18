@@ -24,11 +24,11 @@ void crsf_rx() {
 
 void crsf_tx() {
 
-  float voltage;
-  float current;
-  float capacity;
-  float remaining;
-  crsf_sensor_battery_t crsfBatt = { 0 };
+  // float voltage;
+  // float current;
+  // float capacity;
+  // float remaining;
+   crsf_sensor_battery_t crsfBatt = { 0 };
 
   if (crsf_telem_freq.TRIGGERED) {
     crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));  //Volts

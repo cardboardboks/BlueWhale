@@ -18,9 +18,9 @@ void boot_esc() {
   gpio_config(&cfg);
   gpio_set_level((gpio_num_t)PIN_ESC2, 0);
 
-  // wai for boot and set leds to booting colour
+  // wait for boot and set leds to booting colour
   for (unsigned long start = millis(); millis() - start < esc_arm_duration / 2;) {
-    led(1);
+    //   led(1);
   }
 
   // create esc object, set up and bind to pin
@@ -30,7 +30,7 @@ void boot_esc() {
 
   // wait for ESC to boot before enabling EDT
   for (unsigned long start = millis(); millis() - start < esc_arm_duration;) {
-    led(1);
+    //  led(1);
     drive_esc(0, 0);
   }
 
@@ -41,9 +41,18 @@ void boot_esc() {
 
 void drive_esc(int thr1, int thr2) {
 
-  // copy the commanded drive values out for debugging purposes
-  throttle1 = thr1;
-  throttle2 = thr2;
+  // check for an active rf link right before sending esc command
+  // if no rf connection, force esc to disarm
+  if (crsf.isLinkUp() == 0 || ch[3] == 1000) {
+    thr1 = 0;
+    thr2 = 0;
+    throttle1 = 1500;
+    throttle2 = 1500;
+  } else {
+    // copy the commanded drive values out for debugging purposes
+    throttle1 = thr1;
+    throttle2 = thr2;
+  }
 
   //scale 1000-2000 range to dshot 3d mode lower and upper halves. if throttle centred send esc disarm command
   if (thr1 == 0) {
@@ -75,13 +84,6 @@ void drive_esc(int thr1, int thr2) {
 
   // drive the esc's output every 1000microseconds
   if (dshot_freq.TRIGGERED) {
-
-    // check for an active rf link right before sending esc command
-    // if no rf connection, force esc to disarm
-    if (crsf.isLinkUp() == 0 || ch[3] == 1000) {
-      thr1 = 0;
-      thr2 = 0;
-    }
 
     // send packet to escs
     esc1.send(thr1);
