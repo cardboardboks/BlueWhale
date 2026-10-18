@@ -118,6 +118,7 @@ int ch[8] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
 bool safe_switch = 0;
 bool safe_sticks = 0;
 bool safe_link = 0;
+bool safed = 0;
 
 // leds
 // configure leds
@@ -127,7 +128,7 @@ void setup() {
   // configure leds, sneak this in beofre esc's so we can use them to show status
   // begin(sck, miso, mosi, ss) -> only MOSI is used
   ledSPI.begin(4, -1, LED_PIN, -1);
-  // led(1);
+  led(1);
 
   // configure escs, must be done very close to first. check esc lib documenation for details
   boot_esc();

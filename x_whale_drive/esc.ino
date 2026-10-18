@@ -20,7 +20,7 @@ void boot_esc() {
 
   // wait for boot and set leds to booting colour
   for (unsigned long start = millis(); millis() - start < esc_arm_duration / 2;) {
-    //   led(1);
+    led(1);
   }
 
   // create esc object, set up and bind to pin
@@ -30,7 +30,7 @@ void boot_esc() {
 
   // wait for ESC to boot before enabling EDT
   for (unsigned long start = millis(); millis() - start < esc_arm_duration;) {
-    //  led(1);
+    led(1);
     drive_esc(0, 0);
   }
 
@@ -50,13 +50,16 @@ void drive_esc(int thr1, int thr2) {
     throttle2 = 1500;
     led(4);
 
+
     // if safe force esc to disarm and set leds
   } else if (ch[3] == 1000) {
     thr1 = 0;
     thr2 = 0;
     throttle1 = 1500;
     throttle2 = 1500;
-    led(3);
+    if (safed == 1) {
+      led(3);
+    }
   } else {
     // copy the commanded drive values out for debugging purposes
     throttle1 = thr1;

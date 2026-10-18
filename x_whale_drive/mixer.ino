@@ -27,23 +27,27 @@ void mixer(float throttle, float steering) {
 
     // upright - forwards
     if (ch[6] == 1000 && RP < roll_flip) {
+      led(7);
       t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
       s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
     }
 
     // upright - backwards
     if (ch[6] == 2000 && RP < roll_flip) {
+      led(8);
       t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
       s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
     }
 
     // upsidedown - forwards
+    led(7);
     if (ch[6] == 1000 && RP > roll_flip) {
       t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
       s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
     }
 
     // upsidedown - backwards
+    led(8);
     if (ch[6] == 2000 && RP > roll_flip) {
       t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
       s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);

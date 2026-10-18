@@ -11,8 +11,11 @@ void pre_arm_safe() {
     // force esc's to disarmed
     crsf_rx();
     drive_esc(0, 0);
-    // led(2);
     serial_debug(1);
+
+    if (crsf.isLinkUp() != 0) {
+      led(2);
+    }
 
     // make sure arm switch is off
     if (ch[3] == 1000) {
@@ -35,4 +38,5 @@ void pre_arm_safe() {
       safe_link = 0;
     }
   }
+  safed = 1;
 }
