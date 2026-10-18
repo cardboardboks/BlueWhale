@@ -11,7 +11,7 @@ void crsf_rx() {
 
   crsf.update();
 
-  for (int i = 0; i <= 8; i++) {
+  for (int i = 0; i < 8; i++) {
     ch[i] = crsf.getChannel(i);
     if (ch[i] < 1000) {
       ch[i] = 1000;
@@ -28,7 +28,7 @@ void crsf_tx() {
   // float current;
   // float capacity;
   // float remaining;
-   crsf_sensor_battery_t crsfBatt = { 0 };
+  crsf_sensor_battery_t crsfBatt = { 0 };
 
   if (crsf_telem_freq.TRIGGERED) {
     crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));  //Volts

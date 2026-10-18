@@ -109,6 +109,7 @@ BlockNot dshot_telem_freq(1000);
 BlockNot crsf_telem_freq(100);
 BlockNot led_freq(1000);
 BlockNot serial_freq(500);
+BlockNot rainbow_freq(2);
 
 // rx channel array
 int ch[8] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };

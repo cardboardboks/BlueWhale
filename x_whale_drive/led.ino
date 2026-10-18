@@ -21,24 +21,12 @@
 void led(int led_type) {
 
   if (led_type == 3) {
-    static uint8_t hue = 0;
 
-    // Simple rainbow chase
-    for (int i = 0; i < NUM_LEDS; i++) {
-      uint8_t h = hue + i * (256 / NUM_LEDS);
-      // quick HSV(h,255,64) -> RGB
-      uint8_t region = h / 43, rem = (h - region * 43) * 6;
-      uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
-      switch (region) {
-        case 0: leds[i] = { v, t, 0 }; break;
-        case 1: leds[i] = { q, v, 0 }; break;
-        case 2: leds[i] = { 0, v, t }; break;
-        case 3: leds[i] = { 0, q, v }; break;
-        case 4: leds[i] = { t, 0, v }; break;
-        default: leds[i] = { v, 0, q }; break;
-      }
-    }
-    hue++;
+    rainbow_led(0, 3, 2);
+    static_led(3, 3, 255, 0, 0);
+
+    rainbow_led(6, 3, 2);
+    static_led(9, 3, 255, 0, 0);
   }
 
   // Serial.println(led_type);
@@ -209,4 +197,37 @@ void showLeds() {
   ledSPI.beginTransaction(SPISettings(SPI_FREQ, MSBFIRST, SPI_MODE0));
   ledSPI.writeBytes(spiBuf, sizeof(spiBuf));
   ledSPI.endTransaction();
+}
+
+void rainbow_led(int start, int count, int freq) {
+
+  static uint8_t hue = 0;
+  static uint32_t lastfade = 0;
+
+  if (millis() - lastfade > freq) {
+    lastfade = millis();
+
+    for (int i = start; i < start + count; i++) {
+      uint8_t h = hue + i * (256 / NUM_LEDS);
+      // quick HSV(h,255,64) -> RGB
+      uint8_t region = h / 43, rem = (h - region * 43) * 6;
+      uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
+      switch (region) {
+        case 0: leds[i] = { v, t, 0 }; break;
+        case 1: leds[i] = { q, v, 0 }; break;
+        case 2: leds[i] = { 0, v, t }; break;
+        case 3: leds[i] = { 0, q, v }; break;
+        case 4: leds[i] = { t, 0, v }; break;
+        default: leds[i] = { v, 0, q }; break;
+      }
+    }
+    hue++;
+  }
+}
+
+void static_led(int start, int count, uint8_t  r, uint8_t  g, uint8_t  b) {
+
+  for (int i = start; i < start + count; i++) {
+    leds[i] = { r, g, b };
+  }
 }

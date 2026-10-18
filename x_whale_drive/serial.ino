@@ -27,7 +27,7 @@ void serial_debug(int message_type) {
       Serial.print(" safe_link ");
       Serial.println(safe_link);
 
-      for (int i = 1; i <= 8; i++) {
+      for (int i = 1; i < 8; i++) {
         Serial.print(" ");
         Serial.print(ch[i]);
       }
@@ -40,7 +40,8 @@ void serial_debug(int message_type) {
 
       Serial.println(" Thr:  | Volt:  | Cur: | Tmp: | RPM: | Speed: ");
 
-      auto &s1 = esc1.stats();
+      // auto &s1 = esc1.stats();
+      esc1.stats();
 
       Serial.printf(
         "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
@@ -51,7 +52,8 @@ void serial_debug(int message_type) {
         (esc1.rpm() / gearbox_ratio1),
         (wheel_diamiter1 / 10) * (esc1.rpm() / gearbox_ratio1) * 0.001885);
 
-      auto &s2 = esc2.stats();
+      // auto &s2 = esc2.stats();
+      esc2.stats();
 
       Serial.printf(
         "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h\n",
@@ -71,7 +73,7 @@ void serial_debug(int message_type) {
       Serial.print(link->active_antenna == 0 ? link->uplink_RSSI_1 : link->uplink_RSSI_2);
       Serial.println("dBm ");
 
-      for (int i = 1; i <= 8; i++) {
+      for (int i = 1; i < 8; i++) {
         Serial.print(" ");
         Serial.print(ch[i]);
       }

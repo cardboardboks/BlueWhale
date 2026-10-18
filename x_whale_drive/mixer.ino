@@ -13,8 +13,8 @@ const float STEER_GAIN = 1.0f;  // lower = gentler turning
 // throttle, steering: 1000-2000 us (1500 = centre)
 void mixer(float throttle, float steering) {
 
-  float t;
-  float s;
+  float t = 1500;
+  float s = 1500;
 
   // scale and constrain inputs
   // impliment logic for auto up and reverese
