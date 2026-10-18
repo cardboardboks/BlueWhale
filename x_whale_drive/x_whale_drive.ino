@@ -1,3 +1,13 @@
+// MySketch/
+// ├── MySketch.ino
+// ├── config.h        ← constants, pins, settings
+// ├── globals.h       ← shared variables (declarations)
+// └── globals.cpp     ← shared variables (definitions)
+
+// make this bit tidier 
+#include "config.h"
+#include "globals.h"
+
 // libs
 #include <Arduino.h>
 #include <SPI.h>
@@ -20,6 +30,25 @@
 #define INT_PIN 10
 
 // leds
+#define LED_PIN 6  // This becomes the SPI MOSI pin (any GPIO works via the GPIO matrix)
+#define NUM_LEDS 12
+#define SPI_FREQ 3200000  // 3.2 MHz
+SPIClass ledSPI(FSPI);
+#define RESET_BYTES 64  // 64 bytes * 8 bits * 312.5 ns = ~160 us of low
+static uint8_t spiBuf[NUM_LEDS * 12 + RESET_BYTES];
+
+struct RGB {
+  uint8_t r, g, b;
+};
+RGB leds[NUM_LEDS];
+
+// Lookup: 2 data bits -> 1 SPI byte (two WS2812 bits = 8 SPI bits)
+static const uint8_t lut[4] = {
+  0b10001000,  // 00
+  0b10001110,  // 01
+  0b11101000,  // 10
+  0b11101110   // 11
+};
 
 // imu data
 // dmp orientation
@@ -104,7 +133,8 @@ bool safe_link = 0;
 void setup() {
 
   // configure leds, sneak this in beofre esc's so we can use them to show status
-  // SPI.begin(PIN_SCK, -1, PIN_MOSI, -1);
+  // begin(sck, miso, mosi, ss) -> only MOSI is used
+  ledSPI.begin(4, -1, LED_PIN, -1);
   // led(1);
 
   // configure escs, must be done very close to first. check esc lib documenation for details
@@ -118,7 +148,7 @@ void setup() {
 
   // configure rx and imu
   boot_crsf();
-  boot_imu();
+  // boot_imu();
 
   //start the pre arm safe checks
   pre_arm_safe();
@@ -129,7 +159,7 @@ void loop() {
   // read rx data
   crsf_rx();
   // read imu data
-  imu();
+  // imu();
   // invoke the mixer
   mixer(ch[1], ch[2]);
   // process stabilization

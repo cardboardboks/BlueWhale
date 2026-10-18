@@ -24,6 +24,27 @@
 
 void led(int led_type) {
 
+  if (led_type == 3) {
+    static uint8_t hue = 0;
+
+    // Simple rainbow chase
+    for (int i = 0; i < NUM_LEDS; i++) {
+      uint8_t h = hue + i * (256 / NUM_LEDS);
+      // quick HSV(h,255,64) -> RGB
+      uint8_t region = h / 43, rem = (h - region * 43) * 6;
+      uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
+      switch (region) {
+        case 0: leds[i] = { v, t, 0 }; break;
+        case 1: leds[i] = { q, v, 0 }; break;
+        case 2: leds[i] = { 0, v, t }; break;
+        case 3: leds[i] = { 0, q, v }; break;
+        case 4: leds[i] = { t, 0, v }; break;
+        default: leds[i] = { v, 0, q }; break;
+      }
+    }
+    hue++;
+  }
+
   // Serial.println(led_type);
 
   // uint8_t ratio = 0;
@@ -166,5 +187,30 @@ void led(int led_type) {
   // }
 
   // // drive the LEDs
-  // showSPI(255);
+  showLeds();
+}
+
+void encodeByte(uint8_t v, uint8_t *out) {
+  out[0] = lut[(v >> 6) & 3];
+  out[1] = lut[(v >> 4) & 3];
+  out[2] = lut[(v >> 2) & 3];
+  out[3] = lut[v & 3];
+}
+
+void showLeds() {
+  uint8_t *p = spiBuf;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    // WS2812 expects GRB order
+    encodeByte(leds[i].g, p);
+    p += 4;
+    encodeByte(leds[i].r, p);
+    p += 4;
+    encodeByte(leds[i].b, p);
+    p += 4;
+  }
+  memset(p, 0, RESET_BYTES);  // latch
+
+  ledSPI.beginTransaction(SPISettings(SPI_FREQ, MSBFIRST, SPI_MODE0));
+  ledSPI.writeBytes(spiBuf, sizeof(spiBuf));
+  ledSPI.endTransaction();
 }
