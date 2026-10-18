@@ -4,7 +4,7 @@ void boot_crsf() {
 
   if (!crsfSerial)
     while (1) Serial.println("Invalid crsfSerial configuration");
-  crsf.begin(crsfSerial);  // defaults to CRSF_ADDRESS_FLIGHT_CONTROLLER
+  crsf.begin(crsfSerial);
 }
 
 void crsf_rx() {
@@ -24,15 +24,13 @@ void crsf_rx() {
 
 void crsf_tx() {
 
-  float voltage;
-  float current;
-  float capacity;
-  float remaining;
-  crsf_sensor_battery_t crsfBatt = { 0 };
+  // float voltage;
+  // float current;
+  // float capacity;
+  // float remaining;
+   crsf_sensor_battery_t crsfBatt = { 0 };
 
-  if (millis() - lastTelemMs >= TELEM_INTERVAL_MS) {
-    lastTelemMs = millis();
-
+  if (crsf_telem_freq.TRIGGERED) {
     crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));  //Volts
     crsfBatt.current = htobe16((uint16_t)(esc2.voltage() * 10.0));  //Amps
     crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));   //mAh (24 bit field, max 16777215mAh)
