@@ -19,8 +19,6 @@ void mixer(float throttle, float steering) {
   // scale and constrain inputs
   // impliment logic for auto up and reverese
 
-  // gyro stuff will go here also
-
   // force only normal operation when imu is disabled
   if (ch[4] != 1000) {
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));

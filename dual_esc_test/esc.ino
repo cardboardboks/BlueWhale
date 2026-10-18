@@ -42,12 +42,21 @@ void boot_esc() {
 void drive_esc(int thr1, int thr2) {
 
   // check for an active rf link right before sending esc command
-  // if no rf connection, force esc to disarm
-  if (crsf.isLinkUp() == 0 || ch[3] == 1000) {
+  // if no rf connection, force esc to disarm and se leds
+  if (crsf.isLinkUp() == 0) {
     thr1 = 0;
     thr2 = 0;
     throttle1 = 1500;
     throttle2 = 1500;
+    led(4);
+
+    // if safe force esc to disarm and set leds
+  } else if (ch[3] == 1000) {
+    thr1 = 0;
+    thr2 = 0;
+    throttle1 = 1500;
+    throttle2 = 1500;
+    led(3);
   } else {
     // copy the commanded drive values out for debugging purposes
     throttle1 = thr1;
