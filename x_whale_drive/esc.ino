@@ -20,8 +20,10 @@ void boot_esc() {
 
   // wait for boot and set leds to booting colour
   for (unsigned long start = millis(); millis() - start < esc_arm_duration / 2;) {
-    //   led(1);
   }
+
+  esc1.resetStats();
+  esc2.resetStats();
 
   // create esc object, set up and bind to pin
   // esc#, pin bound to, dshot freq, bidirectinal, pol count
@@ -30,7 +32,6 @@ void boot_esc() {
 
   // wait for ESC to boot before enabling EDT
   for (unsigned long start = millis(); millis() - start < esc_arm_duration;) {
-    //  led(1);
     drive_esc(0, 0);
   }
 
@@ -41,23 +42,80 @@ void boot_esc() {
 
 void drive_esc(int thr1, int thr2) {
 
+  static unsigned long aboveStart = 0;
+  static bool timing = false;
+  static bool triggered = false;
+
+  if (ch[5] > 1800) {
+    if (!timing) {
+      timing = true;
+      aboveStart = millis();  // start the timer
+    } else if (!triggered && millis() - aboveStart >= 2000) {
+      triggered = true;  // make sure it only fires once
+
+      // make this longr flash
+      // static_led(0, 12, 0xffffff);
+      // showLeds();
+
+      boot_esc();
+    }
+  } else {
+    // dropped below threshold: reset everything
+    timing = false;
+    triggered = false;
+  }
+
+  if (esc1.lossPercent() > 10) {
+    // 5 fast blinking orange/black left: esc1 failsafe
+    led(5, 1);
+  } else {
+    led(5, 0);
+  }
+  if (esc2.lossPercent() > 10) {
+    // 6 fast blinking orange/black right: esc2 failsafe
+    led(6, 1);
+  } else {
+    led(6, 0);
+  }
+
   // check for an active rf link right before sending esc command
   // if no rf connection, force esc to disarm and se leds
   if (crsf.isLinkUp() == 0) {
     thr1 = 0;
     thr2 = 0;
-    throttle1 = 1500;
-    throttle2 = 1500;
-    led(4);
+    throttle1 = 0;
+    throttle2 = 1000;
+    led(4, 1);
+  } else {
+    led(4, 0);
+  }
 
-    // if safe force esc to disarm and set leds
-  } else if (ch[3] == 1000) {
+  // if safe force esc to disarm and set leds
+  if (ch[3] == 1000 && crsf.isLinkUp() == 1 && RP <= roll_flip) {
     thr1 = 0;
     thr2 = 0;
     throttle1 = 1500;
     throttle2 = 1500;
-    led(3);
+    if (safed == 1) {
+      led(3, 1);
+    }
   } else {
+    led(3, 0);
+  }
+
+  if (ch[3] == 1000 && crsf.isLinkUp() == 1 && RP >= roll_flip) {
+    thr1 = 0;
+    thr2 = 0;
+    throttle1 = 1500;
+    throttle2 = 1500;
+    if (safed == 1) {
+      led(17, 1);
+    }
+  } else {
+    led(17, 0);
+  }
+
+  if (ch[3] != 1000 && crsf.isLinkUp() == 1) {
     // copy the commanded drive values out for debugging purposes
     throttle1 = thr1;
     throttle2 = thr2;

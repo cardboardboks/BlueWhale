@@ -3,175 +3,128 @@
 // leds
 
 // 1 all blinking yellow/white: booting
-// 2 all blinking turquoise/black: waitng pre arm
-// 3 all rainbow: vechile safe
-// 4 all fast blinking red/black: rc failsafe
+// 2 all blinking green/black: waiting pre arm
+// 3 all rainbow: vehicle safe
+// 4 all fast blinking red/black: rc8linking orange/black left: esc1 failsafe
+// 6 fast blinking orange/black right: esc2 failsafe
+// 7 when auto up is off: all blinking purple/black (stabilisation not available)
+// 16 when imu is not online: all blinking purple/red (stabilisation not available)
 
 //  when auto up is active: upper leds show the status and that it is the top
 //  when auto up is active: lower leds always red
-// 5 stabilization off, drive forward: solid green
-// 6 stabilization off, drive backwards: blinking green
-// 7 stabilization on, drive forward: solid white
-// 8 stabilization on, drive backwards: blinking white
+// 8 stabilisation off, drive forward, top: slow blink teal
+// 9 stabilisation off, drive backwards, top: blinking teal
+// 10 stabilisation off, drive forward, bottom: slow blink teal
+// 11 stabilisation off, drive backwards, bottom: blinking teal
 
-// 9 when auto up is off: all blinking purple/white (stabilization not avalible)
+// 12 stabilisation on, drive forward, top: slow blink white
+// 13 stabilisation on, drive backwards, top: blinking white
+// 14 stabilisation on, drive forward, bottom: slow blink white
+// 15 stabilisation on, drive backwards, bottom: blinking white
 
-// defual to police if everything elese has failed
+void led(int array_num, bool on_off) {
 
-void led(int led_type) {
+  led_arry[array_num] = on_off;
 
-  if (led_type == 3) {
 
-    rainbow_led(0, 3, 2);
-    static_led(3, 3, 255, 0, 0);
 
-    rainbow_led(6, 3, 2);
-    static_led(9, 3, 255, 0, 0);
+  if (led_arry[4] == 1) {  // 4 all fast blinking red/black: rc failsafe
+    fade_led(0, 12, 1, 0xFF0000, 0x000000);
+  } else {
+    if (led_arry[5] == 1 || led_arry[6] == 1) {
+
+      if (led_arry[5] == 1) {  // 5 fast blinking orange/black left: esc1 failsafe
+        fade_led(0, 6, 1, 0xff1e00, 0x000000);
+      }
+
+      if (led_arry[6] == 1) {  // 6 fast blinking orange/black right: esc2 failsafe
+        fade_led(6, 6, 1, 0xff1e00, 0x000000);
+      }
+    } else {
+
+      if (led_arry[1] == 1) {  // 1 all blinking yellow/white: booting
+        fade_led(0, 12, 5, 0x404500, 0xedff00);
+      }
+      if (led_arry[2] == 1) {  // 2 all blinking green/black: waiting pre arm
+        fade_led(0, 12, 5, 0x00ff00, 0x001c00);
+      }
+      if (led_arry[3] == 1) {  // 3 all rainbow: vehicle safe
+        rainbow_led(0, 3, 2);
+        static_led(3, 3, 0xFF0000);
+        rainbow_led(6, 3, 2);
+        static_led(9, 3, 0xFF0000);
+      }
+      if (led_arry[17] == 1) {  // 3 all rainbow: vehicle safe
+        static_led(0, 3, 0xFF0000);
+        rainbow_led(3, 3, 2);
+        static_led(6, 3, 0xFF0000);
+        rainbow_led(9, 3, 2);
+      }
+      if (led_arry[7] == 1) {  // 7 when auto up is off: all blinking purple/white (stabilisation not available)
+        fade_led(0, 12, 1, 0xff00ff, 0x2e002e);
+      }
+
+
+      if (led_arry[8] == 1) {  // 8 stabilisation off, drive forward, top: slow blink teal
+        fade_led(0, 3, 10, 0x0059ff, 0x000c24);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 10, 0x0059ff, 0x000c24);
+        static_led(9, 3, 0x00ff2f);
+      }
+      if (led_arry[9] == 1) {  // 9 stabilisation off, drive backwards, top: blinking teal
+        fade_led(0, 3, 1, 0x0059ff, 0x000c24);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 1, 0x0059ff, 0x000c24);
+        static_led(9, 3, 0x00ff2f);
+      }
+
+      if (led_arry[10] == 1) {  // 10 stabilisation off, drive forward, bottom: slow blink teal
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 10, 0x0059ff, 0x000c24);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 10, 0x0059ff, 0x000c24);
+      }
+      if (led_arry[11] == 1) {  // 11 stabilisation off, drive backwards, bottom: blinking teal
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 1, 0x0059ff, 0x000c24);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 1, 0x0059ff, 0x000c24);
+      }
+
+
+      if (led_arry[12] == 1) {  // 12 stabilisation on, drive forward, top: slow blink white
+        fade_led(0, 3, 10, 0xffffff, 0x2e2e2e);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 10, 0xffffff, 0x2e2e2e);
+        static_led(9, 3, 0x00ff2f);
+      }
+      if (led_arry[13] == 1) {  // 13 stabilisation on, drive backwards, top: blinking white
+        fade_led(0, 3, 1, 0xffffff, 0x000000);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 1, 0xffffff, 0x000000);
+        static_led(9, 3, 0x00ff2f);
+      }
+
+      if (led_arry[14] == 1) {  // 14 stabilisation on, drive forward, bottom: slow blink white
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 10, 0xffffff, 0x2e2e2e);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 10, 0xffffff, 0x2e2e2e);
+      }
+      if (led_arry[15] == 1) {  // 15 stabilisation on, drive backwards, bottom: blinking white
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 1, 0xffffff, 0x000000);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 1, 0xffffff, 0x000000);
+      }
+    }
   }
 
-  // Serial.println(led_type);
+  // drive the LEDs
 
-  // uint8_t ratio = 0;
-
-  // // 1 all blinking yellow/white: booting
-  // if (led_type == 1) {
-  //   ratio = beatsin8(100, 0, 255);
-  //   CRGB currentColor = blend(0xFF8C00, 0xFFB963, ratio);
-  //   for (int i = 0; i < NUM_LEDS; i++) {
-  //     leds[i] = currentColor;
-  //   }
-
-  //   // 2 all blinking turquoise/black: waitng pre arm
-  // } else if (led_type == 2) {
-  //   ratio = beatsin8(50, 0, 255);
-  //   CRGB currentColor = blend(0x00F1FF, 0x1C0000, ratio);
-  //   for (int i = 0; i < NUM_LEDS; i++) {
-  //     leds[i] = currentColor;
-  //   }
-
-  //   // 3 all rainbow: vechile safe
-  // } else if (led_type == 3) {
-  //   static uint8_t hue = 0;
-  //   fill_rainbow(&(leds[0]), 3, hue++, 100);
-
-  //   leds[3] = CRGB::Red;
-  //   leds[4] = CRGB::Red;
-  //   leds[5] = CRGB::Red;
-
-  //   fill_rainbow(&(leds[6]), 3, hue++, 100);
-
-  //   leds[9] = CRGB::Red;
-  //   leds[10] = CRGB::Red;
-  //   leds[11] = CRGB::Red;
-
-  //   // 4 all fast blinking red/black: rc failsafe
-  // } else if (led_type == 4) {
-  //   ratio = beatsin8(200, 0, 255);
-  //   CRGB currentColor = blend(0xFF0000, 0x1C0000, ratio);
-  //   for (int i = 0; i < NUM_LEDS; i++) {
-  //     leds[i] = currentColor;
-  //   }
-
-  //   // 5 stabilization off, drive forward: solid green
-  // } else if (led_type == 5) {
-  //   ratio = beatsin8(100, 0, 255);
-  //   CRGB currentColor = blend(0x07FF00, 0x07FF00, ratio);
-  //   leds[0] = currentColor;
-  //   leds[1] = currentColor;
-  //   leds[2] = currentColor;
-
-  //   leds[3] = CRGB::Red;
-  //   leds[4] = CRGB::Red;
-  //   leds[5] = CRGB::Red;
-
-  //   leds[6] = currentColor;
-  //   leds[7] = currentColor;
-  //   leds[8] = currentColor;
-
-  //   leds[9] = CRGB::Red;
-  //   leds[10] = CRGB::Red;
-  //   leds[11] = CRGB::Red;
-
-  //   // 6 stabilization off, drive backwards: blinking green
-  // } else if (led_type == 6) {
-  //   ratio = beatsin8(100, 0, 255);
-  //   CRGB currentColor = blend(0x07FF00, 0x094500, ratio);
-
-  //   leds[0] = currentColor;
-  //   leds[1] = currentColor;
-  //   leds[2] = currentColor;
-
-  //   leds[3] = CRGB::Red;
-  //   leds[4] = CRGB::Red;
-  //   leds[5] = CRGB::Red;
-
-  //   leds[6] = currentColor;
-  //   leds[7] = currentColor;
-  //   leds[8] = currentColor;
-
-  //   leds[9] = CRGB::Red;
-  //   leds[10] = CRGB::Red;
-  //   leds[11] = CRGB::Red;
-
-  //   // 7 stabilization on, drive forward: solid white
-  // } else if (led_type == 7) {
-  //   ratio = beatsin8(100, 0, 255);
-  //   CRGB currentColor = blend(0xFFFFFF, 0xFFFFFF, ratio);
-  //   leds[0] = currentColor;
-  //   leds[1] = currentColor;
-  //   leds[2] = currentColor;
-
-  //   leds[3] = CRGB::Red;
-  //   leds[4] = CRGB::Red;
-  //   leds[5] = CRGB::Red;
-
-  //   leds[6] = currentColor;
-  //   leds[7] = currentColor;
-  //   leds[8] = currentColor;
-
-  //   leds[9] = CRGB::Red;
-  //   leds[10] = CRGB::Red;
-  //   leds[11] = CRGB::Red;
-
-  //   // 8 stabilization on, drive backwards: blinking white
-  // } else if (led_type == 8) {
-  //   ratio = beatsin8(100, 0, 255);
-  //   CRGB currentColor = blend(0xFFFFFF, 0x292929, ratio);
-  //   leds[0] = currentColor;
-  //   leds[1] = currentColor;
-  //   leds[2] = currentColor;
-
-  //   leds[3] = CRGB::Red;
-  //   leds[4] = CRGB::Red;
-  //   leds[5] = CRGB::Red;
-
-  //   leds[6] = currentColor;
-  //   leds[7] = currentColor;
-  //   leds[8] = currentColor;
-
-  //   leds[9] = CRGB::Red;
-  //   leds[10] = CRGB::Red;
-  //   leds[11] = CRGB::Red;
-
-  //   // 9 when auto up is off: all purple (stabilization not avalible)
-  // } else if (led_type == 9) {
-  //   ratio = beatsin8(50, 0, 255);
-  //   CRGB currentColor = blend(0xFF05F3, 0x990B91, ratio);
-  //   for (int i = 0; i < NUM_LEDS; i++) {
-  //     leds[i] = currentColor;
-  //   }
-
-  //   // defual to police if everything elese has failed
-  // } else {
-  //   ratio = beatsin8(100, 0, 255);
-  //   CRGB currentColor = blend(CRGB::Blue, CRGB::Red, ratio);
-  //   for (int i = 0; i < NUM_LEDS; i++) {
-  //     leds[i] = currentColor;
-  //   }
-  // }
-
-  // // drive the LEDs
-  showLeds();
+  if (led_freq.TRIGGERED) {
+    showLeds();
+  }
 }
 
 void encodeByte(uint8_t v, uint8_t *out) {
@@ -225,9 +178,40 @@ void rainbow_led(int start, int count, int freq) {
   }
 }
 
-void static_led(int start, int count, uint8_t  r, uint8_t  g, uint8_t  b) {
+void static_led(int start, int count, uint32_t color) {
+  uint8_t r = (color >> 16) & 0xFF;
+  uint8_t g = (color >> 8) & 0xFF;
+  uint8_t b = color & 0xFF;
 
   for (int i = start; i < start + count; i++) {
     leds[i] = { r, g, b };
+  }
+}
+
+void fade_led(int start, int count, int freq, uint32_t colorA, uint32_t colorB) {
+
+  // Split each 0xRRGGBB value into its channels
+  const uint8_t COLOR_A[3] = { (colorA >> 16) & 0xFF, (colorA >> 8) & 0xFF, colorA & 0xFF };
+  const uint8_t COLOR_B[3] = { (colorB >> 16) & 0xFF, (colorB >> 8) & 0xFF, colorB & 0xFF };
+
+  static uint8_t phase = 0;
+  static uint32_t lastfade = 0;
+
+  if (millis() - lastfade > freq) {
+    lastfade = millis();
+
+    for (int i = start; i < start + count; i++) {
+
+      // triangle wave: 0..255..0 over a full 0..255 phase cycle
+      uint8_t mix = (phase < 128) ? phase * 2 : (255 - phase) * 2;
+
+      // linear blend A -> B
+      uint8_t r = (COLOR_A[0] * (255 - mix) + COLOR_B[0] * mix) / 255;
+      uint8_t g = (COLOR_A[1] * (255 - mix) + COLOR_B[1] * mix) / 255;
+      uint8_t b = (COLOR_A[2] * (255 - mix) + COLOR_B[2] * mix) / 255;
+
+      leds[i] = { r, g, b };
+    }
+    phase++;
   }
 }

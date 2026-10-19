@@ -4,6 +4,8 @@
 // check that sticks are centered
 
 void pre_arm_safe() {
+  boot_esc();
+  led(1, 0);
 
   // hold here until all conditions are met
   while (safe_switch == 0 || safe_sticks == 0 || safe_link == 0) {
@@ -11,8 +13,9 @@ void pre_arm_safe() {
     // force esc's to disarmed
     crsf_rx();
     drive_esc(0, 0);
-    // led(2);
     serial_debug(1);
+
+    led(2, 1);
 
     // make sure arm switch is off
     if (ch[3] == 1000) {
@@ -35,4 +38,6 @@ void pre_arm_safe() {
       safe_link = 0;
     }
   }
+  safed = 1;
+  led(2, 0);
 }

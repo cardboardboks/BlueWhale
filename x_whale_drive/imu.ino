@@ -1,7 +1,8 @@
 void boot_imu() {
 
   Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);
+  Wire.setClock(100000);
+  Wire.setTimeOut(50);
 
   for (int RPthisReading = 0; RPthisReading < RPnumReadings; RPthisReading++) {
     RPreadings[RPthisReading] = 0;
@@ -13,7 +14,7 @@ void boot_imu() {
   mpu.initialize();
   if (!mpu.testConnection()) {
     Serial.println("MPU6050 not found - check wiring/address");
-  //  while (1) delay(1000);
+    //  while (1) delay(1000);
   }
 
   uint8_t devStatus = mpu.dmpInitialize();  // uploads DMP firmware (~1.9 KB)
@@ -37,7 +38,7 @@ void boot_imu() {
   } else {
     // 1 = memory load failed, 2 = DMP config update failed
     Serial.printf("DMP init failed (code %d)\n", devStatus);
-   // while (1) delay(1000);
+    // while (1) delay(1000);
   }
 }
 
@@ -100,22 +101,9 @@ void imu() {
       YreadIndex = 0;
     }
     Y = Ytotal / YnumReadings;
-
-    //  Serial.println(Y);
   }
 
   if (Y > 1400) {
     Y = 1400;
   }
-
-  if (RP > roll_flip) {
-    // pixels.setPixelColor(0, pixels.Color(Y * .175 + 5, 0, 0));
-    // pixels.setPixelColor(1, pixels.Color(Y * .175 + 5, 0, 0));
-    // pixels.setPixelColor(2, pixels.Color(Y * .175 + 5, 0, 0));
-  } else {
-    // pixels.setPixelColor(0, pixels.Color(0, Y * .175 + 5, 0));
-    // pixels.setPixelColor(1, pixels.Color(0, Y * .175 + 5, 0));
-    // pixels.setPixelColor(2, pixels.Color(0, Y * .175 + 5, 0));
-  }
-  // pixels.show();
 }
