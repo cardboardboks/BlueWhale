@@ -1,32 +1,36 @@
+// boards
+//espressif - arduino-esp32
+// make sure this is 3.3.10
+
 // libs
 #include <Arduino.h>
 #include <SPI.h>
 #include <BlockNot.h>
-#include <AlfredoDShot.h>
+#include <AlfredoDShot.h>  // make sure this is 1.0
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "Wire.h"
-// make sure this is 2.3
-#include <AlfredoCRSF.h>
+#include <AlfredoCRSF.h>  // make sure this is 2.3
 #include <HardwareSerial.h>
 
 // defines
 // crsf rx
-#define PIN_RX 20
-#define PIN_TX 21
+#define PIN_RX 1
+#define PIN_TX 2
 
-// imu
-#define SDA_PIN 8
-#define SCL_PIN 9
-#define INT_PIN 10
+#define SDA_PIN 6
+#define SCL_PIN 7
+#define INT_PIN 5
 
 // leds
-#define LED_PIN 6  // This becomes the SPI MOSI pin (any GPIO works via the GPIO matrix)
+#define LED_PIN_MOSI 3  // mosi This becomes the SPI MOSI pin (any GPIO works via the GPIO matrix)
+#define LED_PIN_SCK 4   // sck
 #define NUM_LEDS 12
 #define SPI_FREQ 3200000  // 3.2 MHz
 SPIClass ledSPI(FSPI);
 #define RESET_BYTES 64  // 64 bytes * 8 bits * 312.5 ns = ~160 us of low
 static uint8_t spiBuf[NUM_LEDS * 12 + RESET_BYTES];
+bool led_arry[26] = { 0 };
 
 struct RGB {
   uint8_t r, g, b;
@@ -89,8 +93,8 @@ HardwareSerial crsfSerial(1);
 AlfredoCRSF crsf;
 
 //  esc varibles
-const int PIN_ESC1 = 0;
-const int PIN_ESC2 = 1;
+const int PIN_ESC1 = 8;
+const int PIN_ESC2 = 9;
 const uint8_t MOTOR1_POLES = 14;
 const uint8_t MOTOR2_POLES = 14;
 const int esc_arm_duration = 5000;
@@ -105,14 +109,14 @@ int wheel_diamiter2 = 101;  // in mm
 
 // set up non blocking timers
 BlockNot dshot_freq(1000, MICROSECONDS);
-BlockNot dshot_telem_freq(1000);
 BlockNot crsf_telem_freq(100);
-BlockNot led_freq(1000);
+BlockNot led_freq(10);
 BlockNot serial_freq(500);
 BlockNot rainbow_freq(2);
+BlockNot crsf_tx_freq(1000);
 
 // rx channel array
-int ch[8] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
+int ch[10] = { 1500 };
 
 // pre arm safe varibles
 bool safe_switch = 0;
@@ -127,14 +131,14 @@ void setup() {
 
   // configure leds, sneak this in beofre esc's so we can use them to show status
   // begin(sck, miso, mosi, ss) -> only MOSI is used
-  ledSPI.begin(4, -1, LED_PIN, -1);
-  led(1);
+  ledSPI.begin(LED_PIN_SCK, -1, LED_PIN_MOSI, -1);
+  led(1, 1);
 
   // configure escs, must be done very close to first. check esc lib documenation for details
   boot_esc();
 
   // configure serial
-  Serial.begin(115200);
+  Serial.begin(921600);
   // make sure usb cdc on boot is enabled or this will throw an error
   Serial.setTxTimeoutMs(0);
   Serial.println("Whale booted");
@@ -155,12 +159,14 @@ void loop() {
   imu();
   // invoke the mixer
   mixer(ch[1], ch[2]);
-  // process stabilization
+  // process stabilisation
   // pid();
   // send commands to the esc;s
   drive_esc(drive1_pwm, drive2_pwm);
   // send telem over rc link
   crsf_tx();
-  //print out debug messages
-  serial_debug(2);
+  // drive leds
+  led(0, 0);
+  // print out debug messages
+  // serial_debug(2);
 }

@@ -4,12 +4,12 @@
 #include <AlfredoCRSF.h>
 #include <HardwareSerial.h>
 
-#define PIN_RX 20
-#define PIN_TX 21
+#define PIN_RX 1
+#define PIN_TX 2
 
-#define SDA_PIN 8
-#define SCL_PIN 9
-#define INT_PIN 10
+#define SDA_PIN 6
+#define SCL_PIN 7
+#define INT_PIN 5
 
 HardwareSerial crsfSerial(1);
 AlfredoCRSF crsf;
@@ -17,12 +17,12 @@ AlfredoCRSF crsf;
 uint32_t lastHeartbeatMs = 0;
 uint32_t lastPrintMs = 0;
 
-#include <Adafruit_NeoPixel.h>
-#ifdef __AVR__
-#include <avr/power.h>  // Required for 16 MHz Adafruit Trinket
-#endif
+// #include <Adafruit_NeoPixel.h>
+// #ifdef __AVR__
+// #include <avr/power.h>  // Required for 16 MHz Adafruit Trinket
+// #endif
 
-Adafruit_NeoPixel pixels(2, 4, NEO_GRB + NEO_KHZ800);
+// Adafruit_NeoPixel pixels(4, 12, NEO_GRB + NEO_KHZ800);
 
 int roll = 0;
 int pitch = 0;
@@ -59,7 +59,7 @@ bool dmpReady = false;
 void setup() {
   Serial.begin(115200);
   Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);
+  Wire.setClock(100000);
 
   Serial.println("ELRS 4.x receiver test");
 
@@ -78,8 +78,8 @@ void setup() {
   }
 
 
-  pixels.begin();  // INITIALIZE NeoPixel strip object (REQUIRED)
-  pixels.clear();  // Set all pixel colors to 'off'
+  // pixels.begin();  // INITIALIZE NeoPixel strip object (REQUIRED)
+  // pixels.clear();  // Set all pixel colors to 'off'
 
 
   mpu.initialize();
@@ -124,7 +124,7 @@ void loop() {
     crsf.sendHeartbeat();
   }
 
-  if (millis() - lastPrintMs > 1000) {
+  if (millis() - lastPrintMs > 100) {
     lastPrintMs = millis();
     printEverything();
   }

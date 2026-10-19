@@ -1,9 +1,9 @@
-// ch1 throttle - analog
+// ch1 throttle - analogled(7)
 // ch2 steering - analog
 // ch3 arming - disared/armed
 // ch4 auto up - on/off/off
-// ch5 stabilization - on/off/off
-// ch6 reverse - forward/backwards
+// ch5 stabilisation - on/off/off
+// ch6 reverse - forward/led(12, 1);
 // ch7 n/a
 // ch8 n/a
 
@@ -20,39 +20,91 @@ void mixer(float throttle, float steering) {
   // impliment logic for auto up and reverese
 
   // force only normal operation when imu is disabled
-  if (ch[4] != 1000) {
+  // when auto up is off: all blinking purple/white (stabilisation not available)
+  if (ch[4] == 2000 && ch[3] == 2000) {
+    led(7, 1);
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
-
-    // upright - forwards
-    if (ch[6] == 1000 && RP < roll_flip) {
-      led(7);
-      t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
-      s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
-    }
-
-    // upright - backwards
-    if (ch[6] == 2000 && RP < roll_flip) {
-      led(8);
-      t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
-      s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
-    }
-
-    // upsidedown - forwards
-    led(7);
-    if (ch[6] == 1000 && RP > roll_flip) {
-      t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
-      s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
-    }
-
-    // upsidedown - backwards
-    led(8);
-    if (ch[6] == 2000 && RP > roll_flip) {
-      t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
-      s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
-    }
+    led(7, 0);
   }
+
+
+
+  // 8 stabilisation off, drive forward, top: slow blink green
+  if (ch[6] == 1000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+    led(8, 1);
+    t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+    s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+  } else {
+    led(8, 0);
+  }
+
+  // 9 stabilisation off, drive backwards, top: blinking green
+  if (ch[6] == 2000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+    led(9, 1);
+    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
+  } else {
+    led(9, 0);
+  }
+
+  // 10 stabilisation off, drive forward, bottom: slow blink green
+  if (ch[6] == 1000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+    led(10, 1);
+    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+    s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+  } else {
+    led(10, 0);
+  }
+
+  // 11 stabilisation off, drive backwards, bottom: blinking green
+  if (ch[6] == 2000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+    led(11, 1);
+    t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
+  } else {
+    led(11, 0);
+  }
+
+
+
+  // 12 stabilisation on, drive forward, top: slow blink white
+  if (ch[6] == 1000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+    led(12, 1);
+    t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+    s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+  } else {
+    led(12, 0);
+  }
+
+  // 13 stabilisation on, drive backwards, top: blinking white
+  if (ch[6] == 2000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+    led(13, 1);
+    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
+  } else {
+    led(13, 0);
+  }
+
+  // 14 stabilisation on, drive forward, bottom: slow blink white
+  if (ch[6] == 1000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+    led(14, 1);
+    t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
+    s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
+  } else {
+    led(14, 0);
+  }
+
+  // 15 stabilisation on, drive backwards, bottom: blinking white
+  if (ch[6] == 2000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+    led(15, 1);
+    t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
+    s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
+  } else {
+    led(15, 0);
+  }
+
 
   // Differential mix
   float left = t + s;

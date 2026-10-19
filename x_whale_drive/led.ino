@@ -3,83 +3,128 @@
 // leds
 
 // 1 all blinking yellow/white: booting
-// 2 all blinking turquoise/black: waitng pre arm
-// 3 all rainbow: vechile safe
-// 4 all fast blinking red/black: rc failsafe
+// 2 all blinking green/black: waiting pre arm
+// 3 all rainbow: vehicle safe
+// 4 all fast blinking red/black: rc8linking orange/black left: esc1 failsafe
+// 6 fast blinking orange/black right: esc2 failsafe
+// 7 when auto up is off: all blinking purple/black (stabilisation not available)
+// 16 when imu is not online: all blinking purple/red (stabilisation not available)
 
 //  when auto up is active: upper leds show the status and that it is the top
 //  when auto up is active: lower leds always red
-// 5 stabilization off, drive forward: solid green
-// 6 stabilization off, drive backwards: blinking green
-// 7 stabilization on, drive forward: solid white
-// 8 stabilization on, drive backwards: blinking white
+// 8 stabilisation off, drive forward, top: slow blink teal
+// 9 stabilisation off, drive backwards, top: blinking teal
+// 10 stabilisation off, drive forward, bottom: slow blink teal
+// 11 stabilisation off, drive backwards, bottom: blinking teal
 
-// 9 when auto up is off: all blinking purple/white (stabilization not avalible)
+// 12 stabilisation on, drive forward, top: slow blink white
+// 13 stabilisation on, drive backwards, top: blinking white
+// 14 stabilisation on, drive forward, bottom: slow blink white
+// 15 stabilisation on, drive backwards, bottom: blinking white
 
-// defual to police if everything elese has failed
+void led(int array_num, bool on_off) {
 
-void led(int led_type) {
+  led_arry[array_num] = on_off;
 
-  // Serial.println(led_type);
 
-  // 1 all blinking yellow/white: booting
-  if (led_type == 1) {
-    fade_led(0, 12, 5, 0x404500, 0xedff00);
 
-    // 2 all blinking turquoise/black: waitng pre arm
-  } else if (led_type == 2) {
-    fade_led(0, 12, 5, 0x00ccff, 0x00080a);
-
-    // 3 all rainbow: vechile safe
-  } else if (led_type == 3) {
-    rainbow_led(0, 3, 2);
-    static_led(3, 3, 0xFF0000);
-    rainbow_led(6, 9, 2);
-    static_led(9, 3, 0xFF0000);
-
-    // 4 all fast blinking red/black: rc failsafe
-  } else if (led_type == 4) {
+  if (led_arry[4] == 1) {  // 4 all fast blinking red/black: rc failsafe
     fade_led(0, 12, 1, 0xFF0000, 0x000000);
-
-    // 5 stabilization off, drive forward: solid green
-  } else if (led_type == 5) {
-    static_led(0, 3, 0x00ff2f);
-    static_led(3, 3, 0xFF0000);
-    static_led(6, 3, 0x00ff2f);
-    static_led(9, 3, 0xFF0000);
-
-    // 6 stabilization off, drive backwards: blinking green
-  } else if (led_type == 6) {
-    fade_led(0, 3, 1, 0x00ff2f, 0x000000);
-    static_led(3, 3, 0xFF0000);
-    fade_led(6, 3, 1, 0x00ff2f, 0x000000);
-    static_led(9, 3, 0x00ff2f);
-
-    // 7 stabilization on, drive forward: solid white
-  } else if (led_type == 7) {
-    static_led(0, 3, 0xffffff);
-    static_led(3, 3, 0xFF0000);
-    static_led(6, 3, 0xffffff);
-    static_led(9, 3, 0xFF0000);
-
-    // 8 stabilization on, drive backwards: blinking white
-  } else if (led_type == 8) {
-    fade_led(0, 3, 1, 0xffffff, 0x000000);
-    static_led(3, 3, 0xFF0000);
-    fade_led(6, 3, 1, 0xffffff, 0x000000);
-    static_led(9, 3, 0x00ff2f);
-
-    // 9 when auto up is off: all purple (stabilization not avalible)
-  } else if (led_type == 9) {
-    fade_led(0, 12, 5, 0xcc00ff, 0x000000);
-
-    // defual to police if everything elese has failed
   } else {
-    fade_led(0, 12, 5, 0xff0000, 0xff0000);
+    if (led_arry[5] == 1 || led_arry[6] == 1) {
+
+      if (led_arry[5] == 1) {  // 5 fast blinking orange/black left: esc1 failsafe
+        fade_led(0, 6, 1, 0xff1e00, 0x000000);
+      }
+
+      if (led_arry[6] == 1) {  // 6 fast blinking orange/black right: esc2 failsafe
+        fade_led(6, 6, 1, 0xff1e00, 0x000000);
+      }
+    } else {
+
+      if (led_arry[1] == 1) {  // 1 all blinking yellow/white: booting
+        fade_led(0, 12, 5, 0x404500, 0xedff00);
+      }
+      if (led_arry[2] == 1) {  // 2 all blinking green/black: waiting pre arm
+        fade_led(0, 12, 5, 0x00ff00, 0x001c00);
+      }
+      if (led_arry[3] == 1) {  // 3 all rainbow: vehicle safe
+        rainbow_led(0, 3, 2);
+        static_led(3, 3, 0xFF0000);
+        rainbow_led(6, 3, 2);
+        static_led(9, 3, 0xFF0000);
+      }
+      if (led_arry[17] == 1) {  // 3 all rainbow: vehicle safe
+        static_led(0, 3, 0xFF0000);
+        rainbow_led(3, 3, 2);
+        static_led(6, 3, 0xFF0000);
+        rainbow_led(9, 3, 2);
+      }
+      if (led_arry[7] == 1) {  // 7 when auto up is off: all blinking purple/white (stabilisation not available)
+        fade_led(0, 12, 1, 0xff00ff, 0x2e002e);
+      }
+
+
+      if (led_arry[8] == 1) {  // 8 stabilisation off, drive forward, top: slow blink teal
+        fade_led(0, 3, 10, 0x0059ff, 0x000c24);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 10, 0x0059ff, 0x000c24);
+        static_led(9, 3, 0x00ff2f);
+      }
+      if (led_arry[9] == 1) {  // 9 stabilisation off, drive backwards, top: blinking teal
+        fade_led(0, 3, 1, 0x0059ff, 0x000c24);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 1, 0x0059ff, 0x000c24);
+        static_led(9, 3, 0x00ff2f);
+      }
+
+      if (led_arry[10] == 1) {  // 10 stabilisation off, drive forward, bottom: slow blink teal
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 10, 0x0059ff, 0x000c24);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 10, 0x0059ff, 0x000c24);
+      }
+      if (led_arry[11] == 1) {  // 11 stabilisation off, drive backwards, bottom: blinking teal
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 1, 0x0059ff, 0x000c24);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 1, 0x0059ff, 0x000c24);
+      }
+
+
+      if (led_arry[12] == 1) {  // 12 stabilisation on, drive forward, top: slow blink white
+        fade_led(0, 3, 10, 0xffffff, 0x2e2e2e);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 10, 0xffffff, 0x2e2e2e);
+        static_led(9, 3, 0x00ff2f);
+      }
+      if (led_arry[13] == 1) {  // 13 stabilisation on, drive backwards, top: blinking white
+        fade_led(0, 3, 1, 0xffffff, 0x000000);
+        static_led(3, 3, 0xFF0000);
+        fade_led(6, 3, 1, 0xffffff, 0x000000);
+        static_led(9, 3, 0x00ff2f);
+      }
+
+      if (led_arry[14] == 1) {  // 14 stabilisation on, drive forward, bottom: slow blink white
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 10, 0xffffff, 0x2e2e2e);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 10, 0xffffff, 0x2e2e2e);
+      }
+      if (led_arry[15] == 1) {  // 15 stabilisation on, drive backwards, bottom: blinking white
+        static_led(0, 3, 0xFF0000);
+        fade_led(3, 3, 1, 0xffffff, 0x000000);
+        static_led(6, 3, 0x00ff2f);
+        fade_led(9, 3, 1, 0xffffff, 0x000000);
+      }
+    }
   }
 
   // drive the LEDs
-  showLeds();
+
+  if (led_freq.TRIGGERED) {
+    showLeds();
+  }
 }
 
 void encodeByte(uint8_t v, uint8_t *out) {

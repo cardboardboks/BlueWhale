@@ -4,6 +4,8 @@
 // check that sticks are centered
 
 void pre_arm_safe() {
+  boot_esc();
+  led(1, 0);
 
   // hold here until all conditions are met
   while (safe_switch == 0 || safe_sticks == 0 || safe_link == 0) {
@@ -13,9 +15,7 @@ void pre_arm_safe() {
     drive_esc(0, 0);
     serial_debug(1);
 
-    if (crsf.isLinkUp() != 0) {
-      led(2);
-    }
+    led(2, 1);
 
     // make sure arm switch is off
     if (ch[3] == 1000) {
@@ -39,4 +39,5 @@ void pre_arm_safe() {
     }
   }
   safed = 1;
+  led(2, 0);
 }
