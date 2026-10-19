@@ -1,16 +1,16 @@
 // boards
 //espressif - arduino-esp32
-// make sure this is 3.3.10
+// make sure this is 3.3.12
 
 // libs
 #include <Arduino.h>
 #include <SPI.h>
 #include <BlockNot.h>
-#include <AlfredoDShot.h>  // make sure this is 1.0
+#include <AlfredoDShot.h>  // make sure this is 1.1.0
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "Wire.h"
-#include <AlfredoCRSF.h>  // make sure this is 2.3
+#include <AlfredoCRSF.h>  // make sure this is 2.4
 #include <HardwareSerial.h>
 
 // defines
