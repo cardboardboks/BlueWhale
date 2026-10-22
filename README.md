@@ -1,6 +1,8 @@
 # BlueWhale
 Whale, now dual core and wifi4 enabled!
+
 Takes CRSF Rx input / transmits CRSF telem back to Tx.
+
 -only basic four telem currently, repurposing data slots for voltage and temprature for two esc's.
 Bidirectional Dshot with extended telem, current voltage and RPM being the key ones.
 -tested with two esc's, but enough RMT's to support four in theory.
