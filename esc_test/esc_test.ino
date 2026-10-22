@@ -9,8 +9,8 @@ AlfredoDShot esc2;
 
 //  varibles
 //  esc varibles
-const int PIN_ESC1 = 7;
-const int PIN_ESC2 = 6;
+const int PIN_ESC1 = 10;
+const int PIN_ESC2 = 11;
 const uint8_t MOTOR1_POLES = 14;
 const uint8_t MOTOR2_POLES = 14;
 float ESC1_thr = 0.0f;

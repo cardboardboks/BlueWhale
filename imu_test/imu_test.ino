@@ -4,25 +4,24 @@
 #include <AlfredoCRSF.h>
 #include <HardwareSerial.h>
 
+#include <Arduino.h>
+#include <ESPCpuMonitor.h>
+
+ESPCpuMonitor cpuMonitor;  // you create the instance; only one can be active at a time
+
+
 #define PIN_RX 1
 #define PIN_TX 2
 
-#define SDA_PIN 6
-#define SCL_PIN 7
-#define INT_PIN 5
+#define SCL_PIN 6
+#define SDA_PIN 7
+#define INT_PIN 8
 
 HardwareSerial crsfSerial(1);
 AlfredoCRSF crsf;
 
 uint32_t lastHeartbeatMs = 0;
 uint32_t lastPrintMs = 0;
-
-// #include <Adafruit_NeoPixel.h>
-// #ifdef __AVR__
-// #include <avr/power.h>  // Required for 16 MHz Adafruit Trinket
-// #endif
-
-// Adafruit_NeoPixel pixels(4, 12, NEO_GRB + NEO_KHZ800);
 
 int roll = 0;
 int pitch = 0;
@@ -77,11 +76,6 @@ void setup() {
     Yreadings[YthisReading] = 0;
   }
 
-
-  // pixels.begin();  // INITIALIZE NeoPixel strip object (REQUIRED)
-  // pixels.clear();  // Set all pixel colors to 'off'
-
-
   mpu.initialize();
   if (!mpu.testConnection()) {
     Serial.println("MPU6050 not found - check wiring/address");
@@ -111,10 +105,37 @@ void setup() {
     Serial.printf("DMP init failed (code %d)\n", devStatus);
     while (1) delay(1000);
   }
+
+
+  CpuMonitorConfig cfg;
+  cfg.sampleIntervalMs = 100;     // sample every 1s
+  cfg.calibrationSamples = 5;     // first 5 windows = "100% idle" baseline
+  cfg.enablePerCore = true;       // default, gives separate core0/core1 values
+  cfg.enableTemperature = false;  // not needed here
+
+  if (!cpuMonitor.init(cfg)) {
+    Serial.println("CPU monitor init failed");
+    return;
+  }
+
+  cpuMonitor.onSample([](const CpuUsageSample &s) {
+#if portNUM_PROCESSORS > 1
+    Serial.printf("core0=%.1f%%  core1=%.1f%%  avg=%.1f%%\n",
+                  s.perCore[0], s.perCore[1], s.average);
+#else
+    Serial.printf("core0=%.1f%%  avg=%.1f%%\n", s.perCore[0], s.average);
+#endif
+  });
 }
 
 void loop() {
 
+
+  xTaskCreatePinnedToCore([](void *) {
+
+
+  },
+                          "imu_0", 2048, nullptr, 1, nullptr, 0);
 
   crsf.update();
 
@@ -237,47 +258,5 @@ void printEverything() {
       Serial.print("mV");
     }
     Serial.println("");
-  }
-
-  const crsf_sensor_temp_t *temp = crsf.getTempSensor();
-  if (temp->temp_count > 0) {
-    Serial.print("temps (deci-C):");
-    for (int i = 0; i < temp->temp_count; i++) {
-      Serial.print(" ");
-      Serial.print(temp->temperature[i]);
-    }
-    Serial.println("");
-  }
-
-  const crsf_sensor_rpm_t *rpm = crsf.getRpmSensor();
-  if (rpm->rpm_count > 0) {
-    Serial.print("rpm:");
-    for (int i = 0; i < rpm->rpm_count; i++) {
-      Serial.print(" ");
-      Serial.print(rpm->rpm[i]);
-    }
-    Serial.println("");
-  }
-
-  if (crsf.getAirspeedSensor()->speed != 0) {
-    Serial.print("airspeed: ");
-    Serial.print(crsf.getAirspeedSensor()->speed / 10.0);
-    Serial.println(" km/h");
-  }
-
-  const crsf_sensor_gps_time_t *gpsTime = crsf.getGpsTimeSensor();
-  if (gpsTime->year != 0) {
-    Serial.print("gps time: ");
-    Serial.print(gpsTime->year);
-    Serial.print("-");
-    Serial.print(gpsTime->month);
-    Serial.print("-");
-    Serial.print(gpsTime->day);
-    Serial.print(" ");
-    Serial.print(gpsTime->hour);
-    Serial.print(":");
-    Serial.print(gpsTime->minute);
-    Serial.print(":");
-    Serial.println(gpsTime->second);
   }
 }

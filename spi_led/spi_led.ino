@@ -9,7 +9,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 
-#define LED_PIN 6  // This becomes the SPI MOSI pin (any GPIO works via the GPIO matrix)
+#define LED_PIN 2  // This becomes the SPI MOSI pin (any GPIO works via the GPIO matrix)
 #define NUM_LEDS 12
 #define SPI_FREQ 3200000  // 3.2 MHz
 
