@@ -7,13 +7,19 @@
 #include <ESPCpuMonitor.h>
 #include <SPI.h>
 #include <AlfredoDShot.h>
-
+#include <ESPmDNS.h>
+#include <NetworkUdp.h>
+#include <ArduinoOTA.h>
 #include <WiFi.h>
 #include <WiFiAP.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
 #include "esp_wifi.h"
+
+SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
+
+#define configTICK_RATE_HZ 2000
 
 // Add near the top with the other config
 IPAddress local_IP(192, 168, 10, 1);  // The ESP32's address
@@ -23,6 +29,7 @@ IPAddress subnet(255, 255, 255, 0);
 // 1. Assign Access Point Network Credentials
 const char *ssid = "Whale";
 const char *password = "Whale#1234";
+uint32_t last_ota_time = 0;
 
 // 2. Initialize Servers
 WebServer server(80);
@@ -37,6 +44,7 @@ int rssiPercentage = 0;  // New variable to store 0-100% scale
 float batteryVoltage = 4.2;
 String statusString = "Optimal";
 
+volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
 
 // Helper function to scale dBm to a reliable 0-100% signal metric
@@ -56,7 +64,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Whale Stats</title>
+    <title>🐋 Whale Stats 🐋</title>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <style>
@@ -93,7 +101,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <div class="phone-wrapper">
-        <h1>Whale Stats</h1>
+        <h1>🐋🐋 Whale Stats 🐋🐋</h1>
         <div class="list-group">
             <div class="row-item"><div class="label">Live Counter</div><div class="value" id="v-counter">0</div></div>
             <div class="row-item"><div class="label">Temperature</div><div class="value" id="v-temp">0.0 °C</div></div>
@@ -242,26 +250,26 @@ void ledTask(void *pvParameters) {
   TickType_t lastWake = xTaskGetTickCount();
 
   for (;;) {
-    // Simple rainbow chase
-    for (int i = 0; i < NUM_LEDS; i++) {
-      uint8_t h = hue + i * (256 / NUM_LEDS);
-      // quick HSV(h,255,64) -> RGB
-      uint8_t region = h / 43, rem = (h - region * 43) * 6;
-      uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
-      switch (region) {
-        case 0: leds[i] = { v, t, 0 }; break;
-        case 1: leds[i] = { q, v, 0 }; break;
-        case 2: leds[i] = { 0, v, t }; break;
-        case 3: leds[i] = { 0, q, v }; break;
-        case 4: leds[i] = { t, 0, v }; break;
-        default: leds[i] = { v, 0, q }; break;
+    if (otaInProgress == false) {
+      // Simple rainbow chase
+      for (int i = 0; i < NUM_LEDS; i++) {
+        uint8_t h = hue + i * (256 / NUM_LEDS);
+        // quick HSV(h,255,64) -> RGB
+        uint8_t region = h / 43, rem = (h - region * 43) * 6;
+        uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
+        switch (region) {
+          case 0: leds[i] = { v, t, 0 }; break;
+          case 1: leds[i] = { q, v, 0 }; break;
+          case 2: leds[i] = { 0, v, t }; break;
+          case 3: leds[i] = { 0, q, v }; break;
+          case 4: leds[i] = { t, 0, v }; break;
+          default: leds[i] = { v, 0, q }; break;
+        }
       }
+      hue++;
+      showLeds();
     }
-    hue++;
-    showLeds();
-
-    // Fixed 10 ms period (more consistent than delay() after work)
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(5));
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1));
   }
 }
 
@@ -329,36 +337,38 @@ bool dmpReady = false;
 
 // All IMU work lives here, pinned to core 0.
 void imuTask(void *arg) {
-  for (;;) {
-    // Sleep until the MPU interrupt fires. The 100 ms timeout recovers from a
-    // missed interrupt, and the idle task always gets to run so the watchdog is happy.
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+  if (otaInProgress == false) {
+    for (;;) {
+      // Sleep until the MPU interrupt fires. The 100 ms timeout recovers from a
+      // missed interrupt, and the idle task always gets to run so the watchdog is happy.
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
 
-    if (!mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) continue;
+      if (!mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) continue;
 
-    mpu.dmpGetQuaternion(&q, fifoBuffer);
-    mpu.dmpGetGravity(&gravity, &q);
-    mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
-    pitch = (int)fabsf(ypr[1] * 180.0f / M_PI);
-    roll = (int)fabsf(ypr[2] * 180.0f / M_PI);
+      pitch = (int)fabsf(ypr[1] * 180.0f / M_PI);
+      roll = (int)fabsf(ypr[2] * 180.0f / M_PI);
 
-    RPtotal -= RPreadings[RPreadIndex];
-    RPreadings[RPreadIndex] = min(roll + pitch, roll_flip * 2);
-    RPtotal += RPreadings[RPreadIndex];
-    RPreadIndex = (RPreadIndex + 1) % RPnumReadings;
-    RP = RPtotal / RPnumReadings;
+      RPtotal -= RPreadings[RPreadIndex];
+      RPreadings[RPreadIndex] = min(roll + pitch, roll_flip * 2);
+      RPtotal += RPreadings[RPreadIndex];
+      RPreadIndex = (RPreadIndex + 1) % RPnumReadings;
+      RP = RPtotal / RPnumReadings;
 
-    mpu.dmpGetGyro(&gy, fifoBuffer);
-    yaw = abs(gy.z);
+      mpu.dmpGetGyro(&gy, fifoBuffer);
+      yaw = abs(gy.z);
 
-    Ytotal -= Yreadings[YreadIndex];
-    Yreadings[YreadIndex] = yaw;
-    Ytotal += Yreadings[YreadIndex];
-    YreadIndex = (YreadIndex + 1) % YnumReadings;
+      Ytotal -= Yreadings[YreadIndex];
+      Yreadings[YreadIndex] = yaw;
+      Ytotal += Yreadings[YreadIndex];
+      YreadIndex = (YreadIndex + 1) % YnumReadings;
 
-    int y = Ytotal / YnumReadings;
-    Y = (y > 1400) ? 1400 : y;
+      int y = Ytotal / YnumReadings;
+      Y = (y > 1400) ? 1400 : y;
+    }
   }
 }
 
@@ -420,7 +430,7 @@ void setup() {
       "imu_0",         // name
       4096,            // stack size (bytes)
       nullptr,         // parameter
-      10,              // priority
+      2,              // priority
       &imuTaskHandle,  // task handle (not needed)
       0                // core 0
     );
@@ -430,7 +440,7 @@ void setup() {
       "ledTask",  // name
       4096,       // stack size (bytes)
       NULL,       // parameter
-      15,         // priority
+      1,         // priority
       NULL,       // task handle (not needed)
       0           // core 0
     );
@@ -438,6 +448,7 @@ void setup() {
 
     pinMode(INT_PIN, INPUT);
     attachInterrupt(digitalPinToInterrupt(INT_PIN), dmpDataReady, RISING);
+
     dmpReady = true;
     Serial.println("DMP ready");
   } else {
@@ -447,7 +458,7 @@ void setup() {
   }
 
   CpuMonitorConfig cpucfg;
-  cpucfg.sampleIntervalMs = 100;
+  cpucfg.sampleIntervalMs = 10;
   cpucfg.calibrationSamples = 5;     // first 5 windows = "100% idle" baseline
   cpucfg.enablePerCore = true;       // separate core0/core1 values
   cpucfg.enableTemperature = false;  // not needed here
@@ -489,6 +500,45 @@ void setup() {
 
 
 
+  ArduinoOTA
+    .onStart([]() {
+      otaInProgress = true;
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH) {
+        type = "sketch";
+      } else {  // U_SPIFFS
+        type = "filesystem";
+      }
+
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type);
+    })
+    .onEnd([]() {
+      otaInProgress = false;
+      Serial.println("\nEnd");
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      if (millis() - last_ota_time > 500) {
+        Serial.printf("Progress: %u%%\n", (progress / (total / 100)));
+        last_ota_time = millis();
+      }
+    })
+    .onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) {
+        Serial.println("Auth Failed");
+      } else if (error == OTA_BEGIN_ERROR) {
+        Serial.println("Begin Failed");
+      } else if (error == OTA_CONNECT_ERROR) {
+        Serial.println("Connect Failed");
+      } else if (error == OTA_RECEIVE_ERROR) {
+        Serial.println("Receive Failed");
+      } else if (error == OTA_END_ERROR) {
+        Serial.println("End Failed");
+      }
+    });
+
+  ArduinoOTA.begin();
 
 
   // wait for boot and set leds to booting colour
@@ -516,6 +566,11 @@ void setup() {
 }
 
 void loop() {
+
+  if (otaInProgress) {
+    return;  // skip all your other code while updating
+  }
+
   crsf.update();
   static uint32_t next = micros();
   static uint32_t lastPrint = 0;
@@ -531,8 +586,10 @@ void loop() {
   server.handleClient();
   webSocket.loop();
 
+  ArduinoOTA.handle();
+
   // Announce ourselves to the CRSF router once per second
-  if (millis() - lastHeartbeatMs > 1000) {
+  if (millis() - lastHeartbeatMs > 100) {
     lastHeartbeatMs = millis();
     crsf.sendHeartbeat();
 
@@ -563,7 +620,7 @@ void loop() {
     // Core Variable Simulations
     liveCounter++;
     temperature += random(-10, 11) / 100.0;
-    humidity += random(-20, 21) / 100.0;
+    humidity = RP;
     batteryVoltage = esc1.voltage();
 
     if (liveCounter % 50 == 0) {
