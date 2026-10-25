@@ -13,7 +13,6 @@
 #include <WiFi.h>
 #include <WiFiAP.h>
 #include <WebServer.h>
-#include <WebSocketsServer.h>
 #include <ArduinoJson.h>
 #include "esp_wifi.h"
 
@@ -34,7 +33,6 @@ uint32_t last_ota_time = 0;
 
 // 2. Initialize Servers
 WebServer server(80);
-WebSocketsServer webSocket = WebSocketsServer(81);
 
 // 3. Variables to Monitor Live
 int liveCounter = 0;
@@ -114,33 +112,27 @@ const char index_html[] PROGMEM = R"rawliteral(
         <div class="status-footer" id="ws-status">Connecting to network...</div>
     </div>
     <script>
-        const socket = new WebSocket('ws://' + window.location.hostname + ':81/');
-        socket.onopen = () => {
-            const footer = document.getElementById('ws-status');
-            footer.innerText = 'CONNECTED TO WHALE';
-            footer.style.color = '#30d158';
-        };
-        socket.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                document.getElementById('v-counter').innerText = data.counter;
-                document.getElementById('v-temp').innerText = data.temp.toFixed(1) + ' °C';
-                document.getElementById('v-hum').innerText = data.hum.toFixed(1) + ' %';
-                
-                // Read percentage directly from WebSocket bundle
-                document.getElementById('v-rssi').innerText = (data.rssi_raw === -127) ? "Disconnected" : data.rssi_pct + '%';
-                
-                document.getElementById('v-bat').innerText = data.bat.toFixed(2) + ' V';
-                const statusEl = document.getElementById('v-status');
-                statusEl.innerText = data.status;
-                statusEl.style.color = (data.status === "Optimal") ? '#30d158' : '#ff9f0a';
-            } catch(e) { console.error("JSON parsing fault", e); }
-        };
-        socket.onclose = () => {
-            const footer = document.getElementById('ws-status');
-            footer.innerText = 'DISCONNECTED';
-            footer.style.color = '#ff453a';
-        };
+       const $ = id => document.getElementById(id);
+
+async function poll() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 1500);
+  try {
+    const r = await fetch('/data', { signal: ctrl.signal, cache: 'no-store' });
+    const d = await r.json();
+    $('v-counter').innerText = d.counter;
+    $('v-temp').innerText = d.temp.toFixed(1) + ' °C';
+    $('v-hum').innerText = d.hum.toFixed(1) + ' %';
+    $('v-rssi').innerText = (d.rssi_raw === -127) ? 'Disconnected' : d.rssi_pct + '%';
+    $('v-bat').innerText = d.bat.toFixed(2) + ' V';
+    $('v-status').innerText = d.status;
+    $('v-status').style.color = (d.status === 'Optimal') ? '#30d158' : '#ff9f0a'; 
+  } finally {
+    clearTimeout(timer);
+    setTimeout(poll, 500);
+  }
+}
+poll();
     </script>
 </body>
 </html>
@@ -163,13 +155,6 @@ String getSerializedData() {
 
 void handleRoot() {
   server.send(200, "text/html", index_html);
-}
-
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
-  if (type == WStype_CONNECTED) {
-    String initialJson = getSerializedData();
-    webSocket.sendTXT(num, initialJson);
-  }
 }
 
 const int PIN_ESC1 = 1;
@@ -375,6 +360,11 @@ void imuTask(void *arg) {
   }
 }
 
+void handleData() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", getSerializedData());
+}
+
 void setup() {
   // running this code pulled from the .cpp to avoid waiting 2.5s esc if it were to call the funtion twice
   gpio_config_t cfg = {};
@@ -491,15 +481,16 @@ void setup() {
   WiFi.softAP(ssid, password);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+  server.begin();
+
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
 
   server.on("/", handleRoot);
   server.begin();
 
-  webSocket.begin();
-  webSocket.onEvent(webSocketEvent);
-  webSocket.enableHeartbeat(3000, 2000, 2);  // ping every 3s, 2s to answer, drop after 2 misses
   Serial.println("Servers initialized smoothly.");
 
 
@@ -591,7 +582,6 @@ void loop() {
   }
 
   server.handleClient();
-  webSocket.loop();
 
   // Announce ourselves to the CRSF router once per second
   if (millis() - lastHeartbeatMs > 1000) {
@@ -633,18 +623,14 @@ void loop() {
     }
 
     String currentData = getSerializedData();
-    // broadcast only runs when there are clients
-    if (webSocket.connectedClients() > 0) {
-      webSocket.broadcastTXT(currentData);
+
+    if (millis() - lastPrintMs > 100) {
+      lastPrintMs = millis();
+      printEverything();
     }
-  }
 
-  if (millis() - lastPrintMs > 100) {
-    lastPrintMs = millis();
-    printEverything();
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
-
-  vTaskDelay(pdMS_TO_TICKS(1));
 }
 
 void printEverything() {
