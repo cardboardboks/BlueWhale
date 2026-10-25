@@ -54,17 +54,17 @@ volatile float coreAveragePeak = 0;  // Added system average peak-hold tracker
 
 // NEW: Decay rate coefficient (Value between 0.0 and 1.0)
 // Lower value = slower decay (e.g., 0.05 is very smooth, 0.20 is faster)
-const float PEAK_DECAY_ALPHA = 0.05f;
+const float PEAK_DECAY_ALPHA = 0.01f;
 
 volatile int16_t imuSpare1 = 0;  // two spare IMU fields
 volatile int16_t imuSpare2 = 0;
 
 // ---- Records (tracked here on the ESP so nothing is missed between page updates) ----
-#define ACCEL_LSB_PER_G 16384.0f  // DMP runs the accel at +/-2 g
-volatile float recMaxG = 0;       // peak total acceleration in g (about 1.0 when sitting still)
-volatile float recMaxA = 0;       // highest current seen on any single ESC
-volatile float recMinV = 0;       // lowest voltage seen on any ESC (0 = nothing recorded yet)
-volatile float recMaxSpd = 0;     // highest AVERAGE speed (average of the ESCs reporting)
+#define DMP_ACCEL_LSB_PER_G 16384.0f  // accel counts per g (+/-2 g range). If Max G still reads ~0.5 or ~1 at rest, try 8192.0f
+volatile float recMaxG = 0;           // peak acceleration in g with gravity removed (about 0 when sitting still)
+volatile float recMaxA = 0;           // highest current seen on any single ESC
+volatile float recMinV = 0;           // lowest voltage seen on any ESC (0 = nothing recorded yet)
+volatile float recMaxSpd = 0;         // highest AVERAGE speed (average of the ESCs reporting)
 
 void resetRecords() {
   recMaxG = 0;
@@ -190,6 +190,8 @@ th.off { opacity: .3; }
 #c-esc table.num th:first-child, #c-esc table.num td.l { width: 25%; }
 #c-esc th:last-child, #c-esc td:last-child { border-left: 1px solid var(--border); }
 #c-esc td:last-child { color: #fff; font-weight: 600; }
+#c-esc th:nth-last-child(2), #c-esc td:nth-last-child(2) { padding-right: .5rem; }   /* gap between ESC 4 and the divider */
+#c-esc th:last-child, #c-esc td:last-child { padding-left: .2rem; }
 
 [hidden] { display: none !important; }
 #c-status h2 { display: flex; justify-content: space-between; align-items: center; }
@@ -233,7 +235,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
 .ch b, .ch span { position: relative; font-weight: 500; }
 .ch b { color: var(--muted); }
 
-.dots { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px 4px; justify-items: center; padding-top: 2px; }
+.dots { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px 4px; justify-items: center; padding-top: 2px; min-width: 0; }
 .dc { display: flex; align-items: center; gap: 3px; }
 .dc span { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .dot { flex: none; width: 0.8rem; height: 0.8rem; border-radius: 50%; background: rgba(255,255,255,.12); }
@@ -252,8 +254,9 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
     grid-template-columns: 1fr 1.6fr 1.3fr 1fr;
     grid-template-areas: "status esc rx imu" "cpu esc rx rec" "arr esc out bulk";
   }
-  .dots { grid-template-columns: repeat(10, 1fr); gap: 3px; }
-  .dot { width: .8rem; height: .8rem; }
+  .dots { grid-template-columns: repeat(5, 1fr); gap: 3px 2px; }
+  .dot { width: .7rem; height: .7rem; }
+  .dc { gap: 2px; }
   .bulk { max-height: 4.5em; }
   .rxtop { grid-template-columns: 1fr 1fr; }
   .chs { grid-template-columns: repeat(4, 1fr); }
@@ -737,7 +740,7 @@ uint8_t fifoBuffer[64];
 Quaternion q;
 VectorFloat gravity;
 VectorInt16 gy;  // gyro
-VectorInt16 aa;  // accel
+VectorInt16 aa;  // accel (raw, includes gravity)
 float ypr[3];
 bool dmpReady = false;
 
@@ -771,7 +774,13 @@ void imuTask(void *arg) {
       imuAy = aa.y;
       imuAz = aa.z;
 
-      float g = sqrtf((float)aa.x * aa.x + (float)aa.y * aa.y + (float)aa.z * aa.z) / ACCEL_LSB_PER_G;
+      // Remove gravity using the DMP orientation. Done by hand (not dmpGetLinearAccel) because that
+      // library function assumes 8192 counts/g, which doesn't match the 16384 this sensor is giving.
+      // 'gravity' is a unit vector (computed above from the quaternion), so scale it to counts first.
+      float lx = aa.x - gravity.x * DMP_ACCEL_LSB_PER_G;
+      float ly = aa.y - gravity.y * DMP_ACCEL_LSB_PER_G;
+      float lz = aa.z - gravity.z * DMP_ACCEL_LSB_PER_G;
+      float g = sqrtf(lx * lx + ly * ly + lz * lz) / DMP_ACCEL_LSB_PER_G;
       if (g > recMaxG) recMaxG = g;
 
       yaw = abs(gy.z);
@@ -799,7 +808,7 @@ float escSpeed(int i) {
   return (wheel_diamiter[i] / 10) * rpmOut * 0.001885;
 }
 
-// Called every ~20 ms from loop(): updates max current, min voltage, max average speed
+// Called on every pass of loop() (about every 1 ms): updates max current, min voltage, max average speed
 void updateRecords() {
   float sumSpd = 0;
   int n = 0;
@@ -953,6 +962,12 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
 void pushWeb() {
   ws.textAll(getSerializedData());
   ws.cleanupClients();
+}
+
+// Peak hold: a new high is taken immediately, otherwise ease down toward the raw reading
+float peakHold(float raw, float peak) {
+  if (raw > peak) return raw;
+  return raw * PEAK_DECAY_ALPHA + peak * (1.0f - PEAK_DECAY_ALPHA);
 }
 
 void setup() {
@@ -1138,41 +1153,25 @@ void loop() {
   if (now - lastUpdate > 100) {
     lastUpdate = now;
     ws.textAll(getSerializedData());
+  }
 
 
-    // Capture the last profile sample safely
+  // CPU load with peak-hold: jumps up instantly, then decays back toward the live reading.
+  // Runs once per CPU monitor sample (every 10 ms, same as cpucfg.sampleIntervalMs) so the decay
+  // speed doesn't depend on how fast loop() spins. With alpha 0.01 the fall-off takes about 1 second.
+  static uint32_t lastCpuMs = 0;
+  if (millis() - lastCpuMs >= 10) {
+    lastCpuMs = millis();
     CpuUsageSample sample;
     if (cpuMonitor.getLastSample(sample)) {
-      // 1. Store raw values
-      core0 = sample.perCore[0];  // Index [0] maps to Core 0
-      core1 = sample.perCore[1];  // Index [1] maps to Core 1
-      coreA = sample.average;
+      core0Peak = peakHold(sample.perCore[0], core0Peak);
+      core1Peak = peakHold(sample.perCore[1], core1Peak);
+      coreAveragePeak = peakHold(sample.average, coreAveragePeak);
 
-      // 2. Process Core 0 Peak Hold
-      if (core0 > core0Peak) {
-        core0Peak = core0;
-      } else {
-        core0Peak = (core0 * PEAK_DECAY_ALPHA) + (core0Peak * (1.0f - PEAK_DECAY_ALPHA));
-      }
-
-      // 3. Process Core 1 Peak Hold
-      if (core1 > core1Peak) {
-        core1Peak = core1;
-      } else {
-        core1Peak = (core1 * PEAK_DECAY_ALPHA) + (core1Peak * (1.0f - PEAK_DECAY_ALPHA));
-      }
-
-      // 4. Process Combined Average Peak Hold
-      if (coreA > coreAveragePeak) {
-        coreAveragePeak = coreA;  // Catch the high average peak instantly
-      } else {
-        // Slowly decay down toward the current lower average reading
-        coreAveragePeak = (coreA * PEAK_DECAY_ALPHA) + (coreAveragePeak * (1.0f - PEAK_DECAY_ALPHA));
-
-        core0 = core0Peak;
-        core1 = core1Peak;
-        coreA = coreAveragePeak;
-      }
+      // what the web page shows
+      core0 = core0Peak;
+      core1 = core1Peak;
+      coreA = coreAveragePeak;
     }
   }
 
@@ -1184,6 +1183,8 @@ void loop() {
     previousMicros += INTERVAL_US;
     for (int i = 0; i < NUM_ESC; i++) escs[i].sendThrottle(throttleCmd[i]);
   }
+
+  updateRecords();  // max/min records, checked on every pass so short peaks aren't missed
 
   if (millis() - lastHeartbeatMs > 1000) {
     lastHeartbeatMs = millis();
@@ -1205,12 +1206,6 @@ void loop() {
     saveTune();
   }
 
-  static uint32_t lastRec = 0;
-  if (millis() - lastRec >= 20) {
-    lastRec = millis();
-    updateRecords();
-  }
-
   // Re-try EDT enable on ESCs that aren't reporting (hot-plugged after boot)
   static uint32_t lastRedetect = 0;
   if (ESC_REDETECT_MS > 0 && millis() - lastRedetect > ESC_REDETECT_MS) {
@@ -1228,58 +1223,6 @@ void loop() {
   }
   // ----------------------------------------------------------------------
 
-  if (millis() - lastPrintMs > 100) {
-    lastPrintMs = millis();
-    printEverything();
-  }
 
   vTaskDelay(pdMS_TO_TICKS(1));
-}
-
-void printEverything() {
-  Serial.print("link: ");
-  Serial.print(crsf.isLinkUp() ? "UP" : "DOWN");
-  const crsfLinkStatistics_t *link = crsf.getLinkStatistics();
-  Serial.print("  LQ: ");
-  Serial.print(link->uplink_Link_quality);
-  Serial.print("  RSSI: -");
-  Serial.print(link->active_antenna == 0 ? link->uplink_RSSI_1 : link->uplink_RSSI_2);
-  Serial.print("dBm  armed: ");
-  Serial.println(crsf.isArmed() ? "yes" : "no");
-
-  Serial.print("channels 1-8:");
-  for (int i = 1; i <= 8; i++) {
-    Serial.print(" ");
-    Serial.print(crsf.getChannel(i));
-  }
-
-  Serial.println("");
-  for (int i = 0; i < NUM_ESC; i++) {
-    if (!escPresent(i)) {
-      Serial.printf("ESC%d: --\n", i + 1);
-      continue;
-    }
-    Serial.printf(
-      "ESC%d: %.0f %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   | %d\n",
-      i + 1,
-      throttleCmd[i] * 100.0f,
-      escs[i].voltage(),
-      escs[i].current(),
-      escs[i].temperatureC(),
-      (escs[i].rpm() / gearbox_ratio[i]),
-      (wheel_diamiter[i] / 10) * (escs[i].rpm() / gearbox_ratio[i]) * 0.001885,
-      (int)escs[i].lossPercent());
-  }
-
-  Serial.printf("core0=%.1f%%  core1=%.1f%%  avg=%.1f%%\n",
-                core0, core1, coreA);
-
-  Serial.print("Tilt: ");
-  Serial.print(RP);
-  Serial.print("\t");
-  Serial.print("Yaw: ");
-  Serial.println(Y);
-
-  Serial.println("");
-  Serial.println("");
 }
