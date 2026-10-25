@@ -13,6 +13,7 @@
 #include <WiFi.h>
 #include <WiFiAP.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>  // flash (NVS) storage for the tuning values
 #include "esp_wifi.h"
 #include "driver/spi_master.h"
 #include <ESPAsyncWebServer.h>
@@ -20,9 +21,7 @@
 
 spi_device_handle_t ledDev;
 
-SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
-
-#define configTICK_RATE_HZ 2000
+SET_TIME_BEFORE_STARTING_SKETCH_MS(2000);
 
 IPAddress local_IP(192, 168, 10, 1);
 IPAddress gateway(192, 168, 10, 1);
@@ -36,18 +35,93 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
 // ---------------- Web dashboard variables ----------------
-String modeString = "Idle";       // <- set this from anywhere in your code
-String bootState = "Starting";    // <- updated during setup()
-String bulkText = "";             // <- free text box, put anything in here
+String modeString = "Idle";     // <- set this from anywhere in your code
+String bootState = "Starting";  // <- updated during setup()
+String bulkText = "";           // <- free text box, put anything in here
 
 #define ARRAY_SIZE 20
 volatile bool flagArray[ARRAY_SIZE];  // <- set any slot true to light its green dot
 
+// Volatile variables for the raw readings
+volatile float core0 = 0;
+volatile float core1 = 0;
+volatile float coreA = 0;
+
+// NEW: Persistent peak variables that decay slowly
+volatile float core0Peak = 0;
+volatile float core1Peak = 0;
+volatile float coreAveragePeak = 0;  // Added system average peak-hold tracker
+
+// NEW: Decay rate coefficient (Value between 0.0 and 1.0)
+// Lower value = slower decay (e.g., 0.05 is very smooth, 0.20 is faster)
+const float PEAK_DECAY_ALPHA = 0.05f;
+
 volatile int16_t imuSpare1 = 0;  // two spare IMU fields
 volatile int16_t imuSpare2 = 0;
 
-float throttleCmd1 = 0.08f;  // 0.0 - 1.0, what you send to the ESC
-float throttleCmd2 = 0.08f;
+// ---- Records (tracked here on the ESP so nothing is missed between page updates) ----
+#define ACCEL_LSB_PER_G 16384.0f  // DMP runs the accel at +/-2 g
+volatile float recMaxG = 0;       // peak total acceleration in g (about 1.0 when sitting still)
+volatile float recMaxA = 0;       // highest current seen on any single ESC
+volatile float recMinV = 0;       // lowest voltage seen on any ESC (0 = nothing recorded yet)
+volatile float recMaxSpd = 0;     // highest AVERAGE speed (average of the ESCs reporting)
+
+void resetRecords() {
+  recMaxG = 0;
+  recMaxA = 0;
+  recMinV = 0;
+  recMaxSpd = 0;
+}
+
+// ---- Whale Tuning page: 20 placeholder variables ----
+// Rename them here. Use tuneVal[n] anywhere in your code; editing a box on the page changes it live.
+// Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
+#define NUM_TUNE 20
+const char *tuneName[NUM_TUNE] = {
+  "Tune Var 01", "Tune Var 02", "Tune Var 03", "Tune Var 04", "Tune Var 05",
+  "Tune Var 06", "Tune Var 07", "Tune Var 08", "Tune Var 09", "Tune Var 10",
+  "Tune Var 11", "Tune Var 12", "Tune Var 13", "Tune Var 14", "Tune Var 15",
+  "Tune Var 16", "Tune Var 17", "Tune Var 18", "Tune Var 19", "Tune Var 20"
+};
+volatile float tuneVal[NUM_TUNE] = { 0 };
+
+// ---- flash storage for the tuning values ----
+// Edits are saved TUNE_SAVE_DELAY_MS after the last change, so typing several values
+// causes one flash write instead of many (flash has a limited number of write cycles).
+#define TUNE_SAVE_DELAY_MS 2000
+Preferences prefs;
+volatile bool tuneDirty = false;
+volatile uint32_t tuneChangedMs = 0;
+
+void loadTune() {
+  float tmp[NUM_TUNE];
+  prefs.begin("whale", true);  // read-only
+  size_t n = prefs.getBytesLength("tune");
+  if (n == sizeof(tmp)) {  // only trust it if the size matches (changing NUM_TUNE falls back to defaults)
+    prefs.getBytes("tune", tmp, sizeof(tmp));
+    for (int i = 0; i < NUM_TUNE; i++) tuneVal[i] = tmp[i];
+  }
+  prefs.end();
+}
+
+void saveTune() {
+  float tmp[NUM_TUNE];
+  for (int i = 0; i < NUM_TUNE; i++) tmp[i] = tuneVal[i];
+  prefs.begin("whale", false);  // read/write
+  prefs.putBytes("tune", tmp, sizeof(tmp));
+  prefs.end();
+}
+
+#define NUM_OUT 8
+// 8 output channels shown on the page. Write 1000-2000 into these from anywhere, e.g. outChannel[0] = 1750;
+volatile int outChannel[NUM_OUT] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
+
+#define NUM_ESC 4
+float throttleCmd[NUM_ESC] = { 0.08f, 0.08f, 0.08f, 0.08f };  // 0.0 - 1.0, what you send to each ESC
+
+// An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
+// so one plugged in after boot can start reporting. Set to 0 to turn this off.
+#define ESC_REDETECT_MS 3000
 
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
@@ -65,97 +139,312 @@ const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>🐋 Whale Stats 🐋</title>
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <style>
-        :root {
-            --bg-color: #0b0f19;
-            --card-bg: rgba(255, 255, 255, 0.05);
-            --border-color: rgba(255, 255, 255, 0.1);
-            --text-main: #ffffff;
-            --text-muted: #8e8e93;
-            --accent: #0a84ff;
-            --success: #30d158;
-            --bad: #ff453a;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            padding: 30px 20px env(safe-area-inset-bottom);
-            display: flex; flex-direction: column; align-items: center;
-        }
-        .phone-wrapper { width: 100%; max-width: 420px; }
-        h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 25px; padding-left: 5px; }
-        h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin: 0 0 8px 8px; }
-        .list-group { background: var(--card-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--border-color); border-radius: 14px; overflow: hidden; margin-bottom: 20px; }
-        .row-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--border-color); gap: 12px; }
-        .row-item:last-child { border-bottom: none; }
-        .label { font-size: 16px; font-weight: 500; }
-        .value { font-size: 16px; font-weight: 400; color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
-        .bulk { padding: 14px 20px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; min-height: 60px; max-height: 200px; overflow-y: auto; }
-        .dots { display: grid; grid-template-columns: repeat(10, 1fr); gap: 10px; padding: 16px 20px; justify-items: center; }
-        .dot { width: 16px; height: 16px; border-radius: 50%; background: rgba(255,255,255,0.12); }
-        .dot.on { background: var(--success); box-shadow: 0 0 8px var(--success); }
-        .good { color: var(--success) !important; }
-        .bad { color: var(--bad) !important; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>🐋 Whale Stats 🐋</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+:root {
+  --bg: #0b0f19; --card: rgba(255,255,255,0.06); --border: rgba(255,255,255,0.10);
+  --text: #fff; --muted: #8e8e93; --val: #d1d1d6;
+  --accent: #0a84ff; --good: #30d158; --warn: #ff9f0a; --bad: #ff453a;
+  --fs: 12px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { font-size: var(--fs); }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; min-height: 100dvh;
+  padding: calc(env(safe-area-inset-top) + 6px) calc(env(safe-area-inset-right) + 8px)
+           calc(env(safe-area-inset-bottom) + 6px) calc(env(safe-area-inset-left) + 8px);
+  display: flex; flex-direction: column; align-items: center;
+}
+.wrap { width: 100%; max-width: 560px; }
+h1 { display: none; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.3px; margin: 0 0 6px 4px; }
+
+/* ---------- grid: portrait phone (default) ---------- */
+.grid {
+  display: grid; gap: 5px; grid-template-columns: 1fr 1fr;
+  grid-template-areas: "status cpu" "esc esc" "rx rx" "out out" "imu rec" "arr arr" "bulk bulk";
+}
+#c-status { grid-area: status; } #c-cpu { grid-area: cpu; }
+#c-esc { grid-area: esc; }       #c-rx { grid-area: rx; }
+#c-imu { grid-area: imu; }       #c-arr { grid-area: arr; }
+#c-out { grid-area: out; }  #c-rec { grid-area: rec; }
+#c-bulk { grid-area: bulk; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px 8px 5px; min-width: 0; }
+.card h2 { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 2px; }
+.kv { display: flex; justify-content: space-between; align-items: baseline; line-height: 1.35; gap: 8px; }
+.kv .v, td { color: var(--val); font-variant-numeric: tabular-nums; }
+.kv .v { text-align: right; }
+
+table { width: 100%; border-collapse: collapse; }
+th { font-size: .8rem; font-weight: 600; color: var(--muted); text-align: right; padding: 0 0 1px; }
+td { text-align: right; line-height: 1.3; padding: 0; }
+th:first-child, td.l { text-align: left; color: var(--text); }
+tr + tr td { border-top: 1px solid var(--border); }
+th.off { opacity: .3; }
+#c-esc table.num th:first-child, #c-esc table.num td.l { width: 25%; }
+#c-esc th:last-child, #c-esc td:last-child { border-left: 1px solid var(--border); }
+#c-esc td:last-child { color: #fff; font-weight: 600; }
+
+[hidden] { display: none !important; }
+#c-status h2 { display: flex; justify-content: space-between; align-items: center; }
+.nav { font: inherit; font-size: .8rem; text-transform: none; letter-spacing: 0; padding: 0 8px; border-radius: 6px;
+       border: 1px solid rgba(10,132,255,.5); background: rgba(10,132,255,.18); color: #64b0ff; }
+.ttop { display: flex; align-items: center; gap: 10px; margin-bottom: 5px; }
+.ttop b { font-size: 1.3rem; font-weight: 700; }
+.ttop .nav { font-size: 1rem; padding: 3px 12px; }
+.tfile { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; flex-wrap: wrap; }
+.tfile .nav { font-size: 1rem; padding: 3px 12px; }
+#tmsg { color: var(--muted); font-size: .9rem; }
+.tgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.tv { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 4px 8px; }
+.tv label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv input { width: 5.5em; min-width: 0; font: inherit; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; text-align: right;
+            color: #fff; background: rgba(255,255,255,.08); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
+.tv input:focus { outline: none; border-color: var(--accent); }
+#c-rec h2 { display: flex; justify-content: space-between; align-items: center; }
+.reset { font: inherit; font-size: .8rem; text-transform: none; letter-spacing: 0; padding: 0 8px; border-radius: 6px;
+         border: 1px solid rgba(255,69,58,.5); background: rgba(255,69,58,.15); color: var(--bad); }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 10; }
+.modal.show { display: flex; }
+.mbox { background: #1c1c1e; border: 1px solid var(--border); border-radius: 14px; padding: 16px; width: min(300px, 85vw); text-align: center; }
+.mbox p { font-size: 1.2rem; margin-bottom: 4px; } .mbox small { display: block; color: var(--muted); margin-bottom: 12px; }
+.mbtns { display: flex; gap: 8px; }
+.mbtns button { flex: 1; font: inherit; font-size: 1.1rem; padding: 8px; border: 0; border-radius: 9px; color: #fff; background: #3a3a3c; }
+.mbtns .yes { background: var(--bad); }
+
+/* fixed column widths + monospace digits so values never shift as digit counts change */
+table.num { table-layout: fixed; }
+table.num th, table.num td { white-space: nowrap; }
+table.num th:first-child, table.num td.l { width: 30%; }
+#c-imu table.num th:first-child, #c-imu table.num td.l { width: 24%; }
+table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .92em; }
+
+.rxtop { display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 8px; margin-bottom: 3px; }
+.chs { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+.ch { position: relative; overflow: hidden; border-radius: 5px; background: rgba(255,255,255,.07);
+      padding: 1px 4px; font-size: .88em; display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+.ch i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(10,132,255,.5); }
+.ch b, .ch span { position: relative; font-weight: 500; }
+.ch b { color: var(--muted); }
+
+.dots { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px 4px; justify-items: center; padding-top: 2px; }
+.dc { display: flex; align-items: center; gap: 3px; }
+.dc span { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dot { flex: none; width: 0.8rem; height: 0.8rem; border-radius: 50%; background: rgba(255,255,255,.12); }
+.dot.on { background: var(--good); box-shadow: 0 0 6px var(--good); }
+
+.bulk { font-family: ui-monospace, Menlo, monospace; font-size: .9rem; color: var(--val);
+        white-space: pre-wrap; word-break: break-word; min-height: 2.2em; max-height: 5em; overflow-y: auto; }
+.good { color: var(--good) !important; } .warn { color: var(--warn) !important; } .bad { color: var(--bad) !important; }
+
+/* ---------- landscape phone: short screen -> 4 columns, no title ---------- */
+@media (orientation: landscape) and (max-height: 520px) {
+  :root { --fs: 11px; }
+  .wrap { max-width: none; }
+  h1 { display: none; }
+  .grid {
+    grid-template-columns: 1fr 1.6fr 1.3fr 1fr;
+    grid-template-areas: "status esc rx imu" "cpu esc rx rec" "arr esc out bulk";
+  }
+  .dots { grid-template-columns: repeat(10, 1fr); gap: 3px; }
+  .dot { width: .8rem; height: .8rem; }
+  .bulk { max-height: 4.5em; }
+  .rxtop { grid-template-columns: 1fr 1fr; }
+  .chs { grid-template-columns: repeat(4, 1fr); }
+  .tgrid { grid-template-columns: repeat(4, 1fr); }
+  .ttop b { font-size: 1.1rem; }
+}
+
+/* ---------- desktop browser: mouse + wide window -> use the space ---------- */
+@media (hover: hover) and (pointer: fine) and (min-width: 900px) {
+  :root { --fs: 15px; }
+  body { padding: 18px 24px; }
+  .wrap { max-width: 1280px; }
+  h1 { display: block; font-size: 2rem; margin-bottom: 12px; }
+  .grid {
+    gap: 12px; grid-template-columns: repeat(4, 1fr);
+    grid-template-areas: "status cpu arr arr" "esc esc rx rx" "esc esc out out" "imu imu rec bulk";
+  }
+  .card { padding: 10px 14px 12px; border-radius: 14px; }
+  .dots { grid-template-columns: repeat(20, 1fr); gap: 6px; padding-top: 6px; }
+  .dot { width: 1.1rem; height: 1.1rem; }
+  .ch { padding: 4px 8px; }
+  .bulk { max-height: 12em; }
+  .tgrid { grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .tv { padding: 8px 14px; }
+  .ttop b { font-size: 1.8rem; }
+}
+</style>
 </head>
 <body>
-    <div class="phone-wrapper">
-        <h1>🐋🐋 Whale Stats 🐋🐋</h1>
-        <div id="root"></div>
+<div class="wrap" id="page-main">
+  <h1>🐋 Whale Stats 🐋</h1>
+  <div class="grid">
+
+    <div class="card" id="c-status"><h2><span>🐋 Status</span><button class="nav" id="btn-tune">Whale Tuning</button></h2>
+      <div class="kv"><span>Data</span><span class="v" id="v-live">--</span></div>
+      <div class="kv"><span>Mode</span><span class="v" id="v-mode">--</span></div>
+      <div class="kv"><span>Boot</span><span class="v" id="v-boot">--</span></div>
+      <div class="kv"><span>Avg Volts</span><span class="v" id="v-avgv">--</span></div>
+      <div class="kv"><span>Avg Amps</span><span class="v" id="v-avga">--</span></div>
     </div>
+
+    <div class="card" id="c-cpu"><h2>CPU</h2>
+      <div class="kv"><span>Core 0</span><span class="v" id="v-c0">--</span></div>
+      <div class="kv"><span>Core 1</span><span class="v" id="v-c1">--</span></div>
+      <div class="kv"><span>Average</span><span class="v" id="v-ca">--</span></div>
+    </div>
+
+    <div class="card" id="c-esc"><h2>ESCs</h2>
+      <table class="num"><thead><tr><th></th><th id="eh1">1</th><th id="eh2">2</th><th id="eh3">3</th><th id="eh4">4</th><th id="eh5">Avg</th></tr></thead><tbody id="esc-body"></tbody></table>
+    </div>
+
+    <div class="card" id="c-rx"><h2>Receiver</h2>
+      <div class="rxtop">
+        <div class="kv"><span>Link</span><span class="v" id="rx-up">--</span></div>
+        <div class="kv"><span>LQ</span><span class="v" id="rx-lq">--</span></div>
+        <div class="kv"><span>RSSI</span><span class="v" id="rx-rssi">--</span></div>
+        <div class="kv"><span>dBm</span><span class="v" id="rx-dbm">--</span></div>
+      </div>
+      <div class="chs" id="chs"></div>
+    </div>
+
+    <div class="card" id="c-out"><h2>Outputs</h2>
+      <div class="chs" id="ochs"></div>
+    </div>
+
+    <div class="card" id="c-imu"><h2>IMU</h2>
+      <table class="num">
+        <thead><tr><th></th><th>X</th><th>Y</th><th>Z</th></tr></thead>
+        <tbody>
+          <tr><td class="l">Gyro</td><td id="i-gx">--</td><td id="i-gy">--</td><td id="i-gz">--</td></tr>
+          <tr><td class="l">Accel</td><td id="i-ax">--</td><td id="i-ay">--</td><td id="i-az">--</td></tr>
+          <tr><td class="l">Spare</td><td id="i-s1">--</td><td id="i-s2">--</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card" id="c-rec"><h2><span>Records</span><button class="reset" id="btn-reset">Reset</button></h2>
+      <div class="kv"><span>Max G</span><span class="v" id="v-rg">--</span></div>
+      <div class="kv"><span>Max Amps</span><span class="v" id="v-ra">--</span></div>
+      <div class="kv"><span>Min Volts</span><span class="v" id="v-rv">--</span></div>
+      <div class="kv"><span>Max Avg Spd</span><span class="v" id="v-rs">--</span></div>
+    </div>
+
+    <div class="card" id="c-arr"><h2>Array</h2><div class="dots" id="dots"></div></div>
+
+    <div class="card" id="c-bulk"><h2>Bulk Text</h2><div class="bulk" id="v-bulk"></div></div>
+
+  </div>
+</div>
+
+<div class="wrap" id="page-tune" hidden>
+  <div class="ttop"><button class="nav" id="btn-back">‹ Back</button><b>🐋 Whale Tuning</b></div>
+  <div class="tfile">
+    <button class="nav" id="btn-psave">⬇ Save .param</button>
+    <button class="nav" id="btn-pload">⬆ Load .param</button>
+    <span id="tmsg"></span>
+    <input type="file" id="file-param" accept=".param,.txt,text/plain" hidden>
+  </div>
+  <div class="tgrid" id="tgrid"></div>
+</div>
+
+<div class="modal" id="modal">
+  <div class="mbox">
+    <p>Are you sure?</p>
+    <small>Max G, Max Amps, Min Volts and Max Avg Speed will all be reset to 0.</small>
+    <div class="mbtns"><button id="m-no">Cancel</button><button class="yes" id="m-yes">Yes, reset</button></div>
+  </div>
+</div>
+
 <script>
-// Each section: [title, [[label, id], ...]]
-const SECTIONS = [
-  ["Status", [["Page Data","v-live"],["Mode","v-mode"],["Boot State","v-boot"]]],
-  ["CPU Load", [["Core 0","v-c0"],["Core 1","v-c1"],["Average","v-ca"]]],
-];
-for (let n = 1; n <= 2; n++) {
-  SECTIONS.push(["ESC " + n, [
-    ["Throttle","e"+n+"-thr"],["Voltage","e"+n+"-v"],["Current","e"+n+"-a"],
-    ["Temperature","e"+n+"-t"],["RPM","e"+n+"-rpm"],["Speed","e"+n+"-spd"],["Link","e"+n+"-link"]
-  ]]);
-}
-const rx = [["Link","rx-up"],["Link Quality","rx-lq"],["RSSI","rx-rssi"],["dBm","rx-dbm"]];
-for (let c = 1; c <= 8; c++) rx.push(["Channel " + c, "rx-ch" + c]);
-SECTIONS.push(["Receiver", rx]);
-SECTIONS.push(["IMU", [
-  ["Gyro X","i-gx"],["Gyro Y","i-gy"],["Gyro Z","i-gz"],
-  ["Accel X","i-ax"],["Accel Y","i-ay"],["Accel Z","i-az"],
-  ["Spare 1","i-s1"],["Spare 2","i-s2"]
-]]);
-
-const root = document.getElementById('root');
-function build() {
-  let html = "";
-  for (const [title, rows] of SECTIONS) {
-    html += `<h2>${title}</h2><div class="list-group">`;
-    for (const [label, id] of rows)
-      html += `<div class="row-item"><div class="label">${label}</div><div class="value" id="${id}">--</div></div>`;
-    html += `</div>`;
-    if (title === "Status") {
-      html += `<h2>Bulk Text</h2><div class="list-group"><div class="bulk" id="v-bulk"></div></div>`;
-    }
-  }
-  html += `<h2>Array</h2><div class="list-group"><div class="dots">`;
-  for (let i = 0; i < 20; i++) html += `<div class="dot" id="d${i}"></div>`;
-  html += `</div></div>`;
-  root.innerHTML = html;
-}
-build();
-
 const $ = id => document.getElementById(id);
 const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
 const f = (v, d) => (v === undefined || v === null) ? "--" : Number(v).toFixed(d);
 
-let websocket, lastMsg = 0;
+// ---- build repeated pieces ----
+// battery: 6S pack. Per-cell limits: below WARN = amber, below LOW = red
+const CELLS = 6, CELL_WARN = 3.7, CELL_LOW = 3.5;   // 22.2 V / 21.0 V on 6S
 
+const ESC_ROWS = [["Thr %","thr",0],["Volts","v",1],["Amps","a",1],["Temp °C","t",0],["RPM","rpm",0],["Spd km/h","spd",1],["Link %","link",0]];
+$('esc-body').innerHTML = ESC_ROWS.map(([l,k]) =>
+  `<tr><td class="l">${l}</td>` + [1,2,3,4,5].map(n => `<td id="e${n}-${k}"></td>`).join("") + `</tr>`).join("");
+
+let chHtml = "";
+for (let c = 1; c <= 8; c++) chHtml += `<div class="ch"><i id="cb${c}"></i><b>${c}</b><span id="rx-ch${c}">--</span></div>`;
+$('chs').innerHTML = chHtml;
+
+let oHtml = "";
+for (let c = 1; c <= 8; c++) oHtml += `<div class="ch"><i id="ob${c}"></i><b>${c}</b><span id="out-ch${c}">--</span></div>`;
+$('ochs').innerHTML = oHtml;
+
+let dHtml = "";
+for (let i = 0; i < 20; i++) dHtml += `<div class="dc"><div class="dot" id="d${i}"></div><span>${i + 1}</span></div>`;
+$('dots').innerHTML = dHtml;
+
+// ---- tuning page ----
+let tHtml = "";
+for (let i = 0; i < 20; i++)
+  tHtml += `<div class="card tv"><label id="tn${i}">Var ${i + 1}</label><input id="tin${i}" type="number" step="any" placeholder="0"></div>`;
+$('tgrid').innerHTML = tHtml;
+for (let i = 0; i < 20; i++) {
+  $('tin' + i).addEventListener('change', e => {
+    const v = parseFloat(e.target.value);
+    if (!isNaN(v) && websocket && websocket.readyState === 1) websocket.send(`set,${i},${v}`);
+  });
+}
+
+// ---- .param file save / load (plain text, one "NAME,value" per line) ----
+let tuneNames = [], lastTune = [];
+const pname = n => n.trim().replace(/\s+/g, '_');
+const tmsg = t => { $('tmsg').textContent = t; };
+
+$('btn-psave').onclick = () => {
+  if (!tuneNames.length || !lastTune.length) { tmsg('Not connected yet'); return; }
+  let t = "# Whale Tuning parameters\n# NAME,value  (lines starting with # are ignored)\n";
+  tuneNames.forEach((n, i) => { t += `${pname(n)},${+Number(lastTune[i]).toPrecision(7)}\n`; });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([t], { type: 'text/plain' }));
+  a.download = 'whale.param';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+  tmsg('Saved whale.param');
+};
+
+$('btn-pload').onclick = () => $('file-param').click();
+$('file-param').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    e.target.value = '';
+    if (!tuneNames.length || !websocket || websocket.readyState !== 1) { tmsg('Not connected yet'); return; }
+    const idx = {};
+    tuneNames.forEach((n, i) => { idx[pname(n).toLowerCase()] = i; });
+    let ok = 0, skip = 0;
+    String(r.result).split(/\r?\n/).forEach(line => {
+      line = line.replace(/[#;].*$/, '').trim();
+      if (!line) return;
+      const p = line.split(/[\s,=]+/);
+      const i = idx[(p[0] || '').toLowerCase()];
+      const v = parseFloat(p[1]);
+      if (i === undefined || !isFinite(v)) { skip++; return; }
+      websocket.send(`set,${i},${v}`);
+      ok++;
+    });
+    tmsg(`Loaded ${ok} value${ok === 1 ? '' : 's'}` + (skip ? `, skipped ${skip} line${skip === 1 ? '' : 's'}` : ''));
+  };
+  r.readAsText(file);
+});
+
+// ---- websocket ----
+let websocket, lastMsg = 0;
 function initWebSocket() {
   websocket = new WebSocket(`ws://${window.location.host}/ws`);
   websocket.onclose = () => setTimeout(initWebSocket, 2000);
@@ -172,26 +461,62 @@ function onMessage(event) {
 
   if (d.cpu) { set('v-c0', f(d.cpu[0],1)+" %"); set('v-c1', f(d.cpu[1],1)+" %"); set('v-ca', f(d.cpu[2],1)+" %"); }
 
-  if (d.esc) d.esc.forEach((e, i) => {
-    const n = i + 1;
-    set(`e${n}-thr`, f(e.thr,0)+" %");
-    set(`e${n}-v`,   f(e.v,1)+" V");
-    set(`e${n}-a`,   f(e.a,1)+" A");
-    set(`e${n}-t`,   f(e.t,0)+" °C");
-    set(`e${n}-rpm`, f(e.rpm,0));
-    set(`e${n}-spd`, f(e.spd,1)+" km/h");
-    set(`e${n}-link`,f(e.link,0)+" %");
-  });
+  if (d.esc) {
+    d.esc.forEach((e, i) => {
+      const n = i + 1;
+      $('eh' + n).classList.toggle('off', !e.ok);
+      ESC_ROWS.forEach(([l, k, dec]) => set(`e${n}-${k}`, e.ok ? f(e[k], dec) : ""));  // absent ESC = blank
+    });
+    // Avg column: only ESCs that are reporting
+    const live = d.esc.filter(e => e.ok);
+    ESC_ROWS.forEach(([l, k, dec]) =>
+      set(`e5-${k}`, live.length ? f(live.reduce((s, e) => s + e[k], 0) / live.length, dec) : ""));
+  }
+
+  if (d.rec) {
+    set('v-rg', f(d.rec.g, 2) + " g");
+    set('v-ra', f(d.rec.a, 1) + " A");
+    set('v-rv', f(d.rec.v, 1) + " V");
+    set('v-rs', f(d.rec.s, 1) + " km/h");
+  }
+
+  // average over ESCs that are giving data, coloured for 6S battery state
+  const av = $('v-avgv');
+  if (d.avg && d.avg.n > 0) {
+    const perCell = d.avg.v / CELLS;
+    av.textContent = f(d.avg.v, 1) + " V";
+    av.className = "v " + (perCell < CELL_LOW ? "bad" : perCell < CELL_WARN ? "warn" : "good");
+    set('v-avga', f(d.avg.a, 1) + " A");
+  } else {
+    av.textContent = "--"; av.className = "v";
+    set('v-avga', "--");
+  }
 
   if (d.rx) {
     const up = $('rx-up');
     up.textContent = d.rx.up ? "UP" : "DOWN";
-    up.className = "value " + (d.rx.up ? "good" : "bad");
+    up.className = "v " + (d.rx.up ? "good" : "bad");
     set('rx-lq', d.rx.lq + " %");
     set('rx-rssi', d.rx.rssi + " %");
-    set('rx-dbm', d.rx.dbm + " dBm");
-    (d.rx.ch || []).forEach((v, i) => set('rx-ch' + (i + 1), v));
+    set('rx-dbm', d.rx.dbm);
+    (d.rx.ch || []).forEach((v, i) => {
+      set('rx-ch' + (i + 1), v);
+      const pct = Math.max(0, Math.min(100, (v - 1000) / 10));
+      $('cb' + (i + 1)).style.width = pct + "%";
+    });
   }
+
+  if (d.names) { tuneNames = d.names; d.names.forEach((n, i) => set('tn' + i, n)); }
+  if (d.tune) lastTune = d.tune;
+  if (d.tune) d.tune.forEach((v, i) => {
+    const inp = $('tin' + i);
+    if (inp && document.activeElement !== inp) inp.value = +Number(v).toFixed(4);   // don't overwrite while typing
+  });
+
+  if (d.out) d.out.forEach((v, i) => {
+    set('out-ch' + (i + 1), v);
+    $('ob' + (i + 1)).style.width = Math.max(0, Math.min(100, (v - 1000) / 10)) + "%";
+  });
 
   if (d.imu) {
     const m = d.imu;
@@ -203,27 +528,62 @@ function onMessage(event) {
   if (d.arr) d.arr.forEach((v, i) => $('d' + i).classList.toggle('on', !!v));
 }
 
-// "Page Data" shows LIVE only while messages keep arriving
 setInterval(() => {
   const live = (Date.now() - lastMsg) < 1000;
   const e = $('v-live');
   e.textContent = live ? "LIVE" : "STALE";
-  e.className = "value " + (live ? "good" : "bad");
+  e.className = "v " + (live ? "good" : "bad");
 }, 300);
 
-window.addEventListener('load', initWebSocket);
+// ---- reset records, with confirmation ----
+const modal = $('modal');
+$('btn-reset').onclick = () => modal.classList.add('show');
+$('m-no').onclick = () => modal.classList.remove('show');
+modal.onclick = e => { if (e.target === modal) modal.classList.remove('show'); };
+$('m-yes').onclick = () => {
+  if (websocket && websocket.readyState === 1) websocket.send('reset');
+  modal.classList.remove('show');
+};
+
+// ---- fit everything on one screen: shrink the base font until nothing scrolls ----
+function fit() {
+  const r = document.documentElement;
+  r.style.removeProperty('--fs');
+  let fs = parseFloat(getComputedStyle(r).getPropertyValue('--fs')) || 12;
+  while ((r.scrollHeight > window.innerHeight + 1 || r.scrollWidth > window.innerWidth + 1) && fs > 7) {
+    fs -= 0.25;
+    r.style.setProperty('--fs', fs + 'px');
+  }
+}
+window.addEventListener('resize', fit);
+window.addEventListener('orientationchange', () => setTimeout(fit, 150));
+setInterval(fit, 3000);
+
+// ---- page switching (#tune = tuning page) ----
+function route() {
+  const t = location.hash === '#tune';
+  $('page-main').hidden = t;
+  $('page-tune').hidden = !t;
+  fit();
+}
+$('btn-tune').onclick = () => { location.hash = 'tune'; };
+$('btn-back').onclick = () => { location.hash = ''; };
+window.addEventListener('hashchange', route);
+
+window.addEventListener('load', () => { initWebSocket(); route(); setTimeout(fit, 400); });
 </script>
 </body>
 </html>
 )rawliteral";
 
 // ---------------- Hardware ----------------
-const int PIN_ESC1 = 1;
-const int PIN_ESC2 = 2;
+// ESC signal pins, in web-page order (ESC 1..4).
+// ESC 1 = GPIO 2 and ESC 2 = GPIO 1, matching your original (swapped) begin() calls.
+// ESC 3 and ESC 4 pins are a guess - change them to wherever you wire them.
+const int ESC_PINS[NUM_ESC] = { 2, 1, 9, 10 };
 const uint8_t MOTOR_POLES = 14;
 
-AlfredoDShot esc1;
-AlfredoDShot esc2;
+AlfredoDShot escs[NUM_ESC];
 
 ESPCpuMonitor cpuMonitor;
 
@@ -353,14 +713,12 @@ volatile int Y = 0;
 volatile int16_t imuGx = 0, imuGy = 0, imuGz = 0;
 volatile int16_t imuAx = 0, imuAy = 0, imuAz = 0;
 
-volatile float core0 = 0;
-volatile float core1 = 0;
-volatile float coreA = 0;
+// volatile float core0 = 0;
+// volatile float core1 = 0;
+// volatile float coreA = 0;
 
-int gearbox_ratio1 = 19;
-int gearbox_ratio2 = 19;
-int wheel_diamiter1 = 101;  // in mm
-int wheel_diamiter2 = 101;  // in mm
+int gearbox_ratio[NUM_ESC] = { 19, 19, 19, 19 };
+int wheel_diamiter[NUM_ESC] = { 101, 101, 101, 101 };  // in mm
 
 const unsigned long INTERVAL_US = 1000;
 unsigned long previousMicros = 0;
@@ -413,6 +771,9 @@ void imuTask(void *arg) {
       imuAy = aa.y;
       imuAz = aa.z;
 
+      float g = sqrtf((float)aa.x * aa.x + (float)aa.y * aa.y + (float)aa.z * aa.z) / ACCEL_LSB_PER_G;
+      if (g > recMaxG) recMaxG = g;
+
       yaw = abs(gy.z);
 
       Ytotal -= Yreadings[YreadIndex];
@@ -427,16 +788,48 @@ void imuTask(void *arg) {
 }
 
 // ---------------- JSON for the web page ----------------
-void addEsc(JsonArray arr, AlfredoDShot &e, float thrCmd, int gear, int wheel) {
+// An ESC counts as present when it is reporting a sensible voltage and its link isn't dead.
+// Tweak this one function if your ESCs behave differently when unplugged.
+bool escPresent(int i) {
+  return escs[i].voltage() > 1.0f && escs[i].lossPercent() < 100;
+}
+
+float escSpeed(int i) {
+  float rpmOut = escs[i].rpm() / gearbox_ratio[i];
+  return (wheel_diamiter[i] / 10) * rpmOut * 0.001885;
+}
+
+// Called every ~20 ms from loop(): updates max current, min voltage, max average speed
+void updateRecords() {
+  float sumSpd = 0;
+  int n = 0;
+  for (int i = 0; i < NUM_ESC; i++) {
+    if (!escPresent(i)) continue;
+    n++;
+    float v = escs[i].voltage();
+    float a = escs[i].current();
+    if (a > recMaxA) recMaxA = a;
+    if (v > 1.0f && (recMinV == 0 || v < recMinV)) recMinV = v;
+    sumSpd += fabsf(escSpeed(i));
+  }
+  if (n > 0) {
+    float avgSpd = sumSpd / n;
+    if (avgSpd > recMaxSpd) recMaxSpd = avgSpd;
+  }
+}
+
+void addEsc(JsonArray arr, int i, bool ok) {
   JsonObject o = arr.add<JsonObject>();
-  float rpmOut = e.rpm() / gear;
-  o["thr"] = thrCmd * 100.0f;
-  o["v"] = e.voltage();
-  o["a"] = e.current();
-  o["t"] = e.temperatureC();
+  o["ok"] = ok;
+  if (!ok) return;  // absent ESC -> page leaves its column blank
+  float rpmOut = escs[i].rpm() / gearbox_ratio[i];
+  o["thr"] = throttleCmd[i] * 100.0f;
+  o["v"] = escs[i].voltage();
+  o["a"] = escs[i].current();
+  o["t"] = escs[i].temperatureC();
   o["rpm"] = rpmOut;
-  o["spd"] = (wheel / 10) * rpmOut * 0.001885;
-  o["link"] = (float)e.lossPercent();  // adjust if you want a different "link" metric
+  o["spd"] = escSpeed(i);
+  o["link"] = (float)escs[i].lossPercent();  // adjust if you want a different "link" metric
 }
 
 String getSerializedData() {
@@ -453,10 +846,25 @@ String getSerializedData() {
   cpu.add(c1);
   cpu.add(ca);
 
-  // ESCs
-  JsonArray escs = doc["esc"].to<JsonArray>();
-  addEsc(escs, esc1, throttleCmd1, gearbox_ratio1, wheel_diamiter1);
-  addEsc(escs, esc2, throttleCmd2, gearbox_ratio2, wheel_diamiter2);
+  // ESCs, plus average voltage/current over the ones that are giving data
+  JsonArray escArr = doc["esc"].to<JsonArray>();
+  float sumV = 0, sumA = 0;
+  int nEsc = 0;
+  for (int i = 0; i < NUM_ESC; i++) {
+    bool ok = escPresent(i);
+    addEsc(escArr, i, ok);
+    if (ok) {
+      sumV += escs[i].voltage();
+      sumA += escs[i].current();
+      nEsc++;
+    }
+  }
+  JsonObject avg = doc["avg"].to<JsonObject>();
+  avg["n"] = nEsc;
+  if (nEsc > 0) {
+    avg["v"] = sumV / nEsc;
+    avg["a"] = sumA / nEsc;
+  }
 
   // Receiver
   JsonObject rx = doc["rx"].to<JsonObject>();
@@ -468,6 +876,21 @@ String getSerializedData() {
   rx["dbm"] = dbm;
   JsonArray ch = rx["ch"].to<JsonArray>();
   for (int i = 1; i <= 8; i++) ch.add(crsf.getChannel(i));
+
+  // Tuning values
+  JsonArray tune = doc["tune"].to<JsonArray>();
+  for (int i = 0; i < NUM_TUNE; i++) tune.add((float)tuneVal[i]);
+
+  // Records
+  JsonObject rec = doc["rec"].to<JsonObject>();
+  rec["g"] = (float)recMaxG;
+  rec["a"] = (float)recMaxA;
+  rec["v"] = (float)recMinV;
+  rec["s"] = (float)recMaxSpd;
+
+  // Outputs
+  JsonArray outArr = doc["out"].to<JsonArray>();
+  for (int i = 0; i < NUM_OUT; i++) outArr.add((int)outChannel[i]);
 
   // IMU
   JsonObject imu = doc["imu"].to<JsonObject>();
@@ -489,10 +912,40 @@ String getSerializedData() {
   return output;
 }
 
+// Names for the tuning page, sent once when a page connects
+String getTuneNames() {
+  JsonDocument doc;
+  JsonArray names = doc["names"].to<JsonArray>();
+  for (int i = 0; i < NUM_TUNE; i++) names.add(tuneName[i]);
+  String output;
+  serializeJson(doc, output);
+  return output;
+}
+
 void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType type,
                void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     client->text(getSerializedData());  // send current values immediately
+    client->text(getTuneNames());
+  } else if (type == WS_EVT_DATA) {
+    // the page's "Reset" button sends the text "reset"
+    AwsFrameInfo *info = (AwsFrameInfo *)arg;
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+      if (len == 5 && memcmp(data, "reset", 5) == 0) resetRecords();
+      // tuning box edited on the page: "set,<index>,<value>"
+      else if (len > 4 && len < 40 && memcmp(data, "set,", 4) == 0) {
+        char buf[40];
+        memcpy(buf, data, len);
+        buf[len] = 0;
+        int idx;
+        float val;
+        if (sscanf(buf, "set,%d,%f", &idx, &val) == 2 && idx >= 0 && idx < NUM_TUNE) {
+          tuneVal[idx] = val;
+          tuneChangedMs = millis();
+          tuneDirty = true;  // loop() saves it to flash shortly after
+        }
+      }
+    }
   }
 }
 
@@ -503,20 +956,19 @@ void pushWeb() {
 }
 
 void setup() {
+
   bootState = "GPIO init";
 
   gpio_config_t cfg = {};
-  cfg.pin_bit_mask = 1ULL << PIN_ESC1;
-  cfg.mode = GPIO_MODE_OUTPUT_OD;
-  cfg.intr_type = GPIO_INTR_DISABLE;
-  gpio_config(&cfg);
-  gpio_set_level((gpio_num_t)PIN_ESC1, 0);
+  for (int i = 0; i < NUM_ESC; i++) {
+    cfg.pin_bit_mask = 1ULL << ESC_PINS[i];
+    cfg.mode = GPIO_MODE_OUTPUT_OD;
+    cfg.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&cfg);
+    gpio_set_level((gpio_num_t)ESC_PINS[i], 0);
+  }
 
-  cfg.pin_bit_mask = 1ULL << PIN_ESC2;
-  cfg.mode = GPIO_MODE_OUTPUT_OD;
-  cfg.intr_type = GPIO_INTR_DISABLE;
-  gpio_config(&cfg);
-  gpio_set_level((gpio_num_t)PIN_ESC2, 0);
+  loadTune();  // restore saved tuning values first
 
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000);
@@ -566,24 +1018,6 @@ void setup() {
     Serial.printf("DMP init failed (code %d)\n", devStatus);
     while (1) delay(1000);
   }
-
-  bootState = "CPU monitor init";
-  CpuMonitorConfig cpucfg;
-  cpucfg.sampleIntervalMs = 10;
-  cpucfg.calibrationSamples = 5;
-  cpucfg.enablePerCore = true;
-  cpucfg.enableTemperature = false;
-
-  if (!cpuMonitor.init(cpucfg)) {
-    Serial.println("CPU monitor init failed");
-    return;
-  }
-
-  cpuMonitor.onSample([](const CpuUsageSample &s) {
-    core0 = s.perCore[0];
-    core1 = s.perCore[1];
-    coreA = s.average;
-  });
 
   bootState = "WiFi AP start";
   Serial.println("\nConfiguring Access Point...");
@@ -653,8 +1087,7 @@ void setup() {
   }
 
   Serial.begin(115200);
-  esc2.begin(PIN_ESC1, DSHOT600, true, MOTOR_POLES);
-  esc1.begin(PIN_ESC2, DSHOT600, true, MOTOR_POLES);
+  for (int i = 0; i < NUM_ESC; i++) escs[i].begin(ESC_PINS[i], DSHOT600, true, MOTOR_POLES);
 
   bootState = "Waiting for ESC boot";
   unsigned long lastBootPush = 0;
@@ -663,8 +1096,7 @@ void setup() {
 
     if (currentMicros - previousMicros >= INTERVAL_US) {
       previousMicros += INTERVAL_US;
-      esc1.sendThrottle(0.f);
-      esc2.sendThrottle(0.f);
+      for (int i = 0; i < NUM_ESC; i++) escs[i].sendThrottle(0.f);
     }
 
     // keep the web page updating during the ESC wait (slow, so it won't upset DShot timing much)
@@ -675,8 +1107,19 @@ void setup() {
   }
 
   bootState = "Enabling EDT";
-  esc1.command(DSHOT_CMD_EDT_ENABLE);
-  esc2.command(DSHOT_CMD_EDT_ENABLE);
+  for (int i = 0; i < NUM_ESC; i++) escs[i].command(DSHOT_CMD_EDT_ENABLE);
+
+  bootState = "CPU monitor init";
+  CpuMonitorConfig cpucfg;
+  cpucfg.sampleIntervalMs = 10;
+  cpucfg.calibrationSamples = 5;
+  cpucfg.enablePerCore = true;
+  cpucfg.enableTemperature = false;
+
+  if (!cpuMonitor.init(cpucfg)) {
+    Serial.println("CPU monitor init failed");
+    return;
+  }
 
   bootState = "Ready";
   modeString = "Running";
@@ -690,10 +1133,47 @@ void loop() {
     return;
   }
 
+
   unsigned long now = millis();
   if (now - lastUpdate > 100) {
     lastUpdate = now;
     ws.textAll(getSerializedData());
+
+
+    // Capture the last profile sample safely
+    CpuUsageSample sample;
+    if (cpuMonitor.getLastSample(sample)) {
+      // 1. Store raw values
+      core0 = sample.perCore[0];  // Index [0] maps to Core 0
+      core1 = sample.perCore[1];  // Index [1] maps to Core 1
+      coreA = sample.average;
+
+      // 2. Process Core 0 Peak Hold
+      if (core0 > core0Peak) {
+        core0Peak = core0;
+      } else {
+        core0Peak = (core0 * PEAK_DECAY_ALPHA) + (core0Peak * (1.0f - PEAK_DECAY_ALPHA));
+      }
+
+      // 3. Process Core 1 Peak Hold
+      if (core1 > core1Peak) {
+        core1Peak = core1;
+      } else {
+        core1Peak = (core1 * PEAK_DECAY_ALPHA) + (core1Peak * (1.0f - PEAK_DECAY_ALPHA));
+      }
+
+      // 4. Process Combined Average Peak Hold
+      if (coreA > coreAveragePeak) {
+        coreAveragePeak = coreA;  // Catch the high average peak instantly
+      } else {
+        // Slowly decay down toward the current lower average reading
+        coreAveragePeak = (coreA * PEAK_DECAY_ALPHA) + (coreAveragePeak * (1.0f - PEAK_DECAY_ALPHA));
+
+        core0 = core0Peak;
+        core1 = core1Peak;
+        coreA = coreAveragePeak;
+      }
+    }
   }
 
   crsf.update();
@@ -702,24 +1182,41 @@ void loop() {
 
   if (currentMicros - previousMicros >= INTERVAL_US) {
     previousMicros += INTERVAL_US;
-    esc1.sendThrottle(throttleCmd1);
-    esc2.sendThrottle(throttleCmd2);
+    for (int i = 0; i < NUM_ESC; i++) escs[i].sendThrottle(throttleCmd[i]);
   }
 
   if (millis() - lastHeartbeatMs > 1000) {
     lastHeartbeatMs = millis();
     crsf.sendHeartbeat();
 
-    esc1.stats();
-    esc2.stats();
+    for (int i = 0; i < NUM_ESC; i++) escs[i].stats();
 
     crsf_sensor_battery_t crsfBatt = { 0 };
 
-    crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));
-    crsfBatt.current = htobe16((uint16_t)(esc2.voltage() * 10.0));
-    crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));
-    crsfBatt.remaining = (uint8_t)(esc2.temperatureC());
+    crsfBatt.voltage = htobe16((uint16_t)(escs[0].voltage() * 10.0));
+    crsfBatt.current = htobe16((uint16_t)(escs[1].voltage() * 10.0));
+    crsfBatt.capacity = htobe24((uint32_t)(escs[0].temperatureC()));
+    crsfBatt.remaining = (uint8_t)(escs[1].temperatureC());
     crsf.queuePacket(CRSF_SYNC_BYTE, CRSF_FRAMETYPE_BATTERY_SENSOR, &crsfBatt, sizeof(crsfBatt));
+  }
+
+  if (tuneDirty && millis() - tuneChangedMs > TUNE_SAVE_DELAY_MS) {
+    tuneDirty = false;
+    saveTune();
+  }
+
+  static uint32_t lastRec = 0;
+  if (millis() - lastRec >= 20) {
+    lastRec = millis();
+    updateRecords();
+  }
+
+  // Re-try EDT enable on ESCs that aren't reporting (hot-plugged after boot)
+  static uint32_t lastRedetect = 0;
+  if (ESC_REDETECT_MS > 0 && millis() - lastRedetect > ESC_REDETECT_MS) {
+    lastRedetect = millis();
+    for (int i = 0; i < NUM_ESC; i++)
+      if (!escPresent(i)) escs[i].command(DSHOT_CMD_EDT_ENABLE);
   }
 
   // ---- DEMO: remove these once you drive the array / text yourself ----
@@ -757,25 +1254,22 @@ void printEverything() {
   }
 
   Serial.println("");
-  Serial.printf(
-    "%.0f %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   |",
-    throttleCmd1 * 100.0f,
-    esc1.voltage(),
-    esc1.current(),
-    esc1.temperatureC(),
-    (esc1.rpm() / gearbox_ratio1),
-    (wheel_diamiter1 / 10) * (esc1.rpm() / gearbox_ratio1) * 0.001885);
-  Serial.println(esc1.lossPercent());
-
-  Serial.printf(
-    "%.0f %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   |",
-    throttleCmd2 * 100.0f,
-    esc2.voltage(),
-    esc2.current(),
-    esc2.temperatureC(),
-    (esc2.rpm() / gearbox_ratio2),
-    (wheel_diamiter2 / 10) * (esc2.rpm() / gearbox_ratio2) * 0.001885);
-  Serial.println(esc2.lossPercent());
+  for (int i = 0; i < NUM_ESC; i++) {
+    if (!escPresent(i)) {
+      Serial.printf("ESC%d: --\n", i + 1);
+      continue;
+    }
+    Serial.printf(
+      "ESC%d: %.0f %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   | %d\n",
+      i + 1,
+      throttleCmd[i] * 100.0f,
+      escs[i].voltage(),
+      escs[i].current(),
+      escs[i].temperatureC(),
+      (escs[i].rpm() / gearbox_ratio[i]),
+      (wheel_diamiter[i] / 10) * (escs[i].rpm() / gearbox_ratio[i]) * 0.001885,
+      (int)escs[i].lossPercent());
+  }
 
   Serial.printf("core0=%.1f%%  core1=%.1f%%  avg=%.1f%%\n",
                 core0, core1, coreA);
