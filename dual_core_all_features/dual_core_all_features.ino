@@ -93,6 +93,10 @@ Preferences prefs;
 volatile bool tuneDirty = false;
 volatile uint32_t tuneChangedMs = 0;
 
+// Reboot requested from the web page (done from loop() after a short delay so the page gets its last update)
+volatile bool rebootPending = false;
+volatile uint32_t rebootAtMs = 0;
+
 void loadTune() {
   float tmp[NUM_TUNE];
   prefs.begin("whale", true);  // read-only
@@ -209,7 +213,10 @@ th.off { opacity: .3; }
 .tv input { width: 5.5em; min-width: 0; font: inherit; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; text-align: right;
             color: #fff; background: rgba(255,255,255,.08); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
 .tv input:focus { outline: none; border-color: var(--accent); }
-#c-rec h2 { display: flex; justify-content: space-between; align-items: center; }
+/* hide the up/down spinner arrows on number boxes (desktop browsers) */
+.tv input::-webkit-outer-spin-button, .tv input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.tv input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+#c-rec h2, #c-cpu h2 { display: flex; justify-content: space-between; align-items: center; }
 .reset { font: inherit; font-size: .8rem; text-transform: none; letter-spacing: 0; padding: 0 8px; border-radius: 6px;
          border: 1px solid rgba(255,69,58,.5); background: rgba(255,69,58,.15); color: var(--bad); }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 10; }
@@ -298,7 +305,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <div class="kv"><span>Avg Amps</span><span class="v" id="v-avga">--</span></div>
     </div>
 
-    <div class="card" id="c-cpu"><h2>CPU</h2>
+    <div class="card" id="c-cpu"><h2><span>CPU</span><button class="reset" id="btn-reboot">Reboot</button></h2>
       <div class="kv"><span>Core 0</span><span class="v" id="v-c0">--</span></div>
       <div class="kv"><span>Core 1</span><span class="v" id="v-c1">--</span></div>
       <div class="kv"><span>Average</span><span class="v" id="v-ca">--</span></div>
@@ -361,8 +368,8 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
 <div class="modal" id="modal">
   <div class="mbox">
     <p>Are you sure?</p>
-    <small>Max G, Max Amps, Min Volts and Max Avg Speed will all be reset to 0.</small>
-    <div class="mbtns"><button id="m-no">Cancel</button><button class="yes" id="m-yes">Yes, reset</button></div>
+    <small id="m-small"></small>
+    <div class="mbtns"><button id="m-no">Cancel</button><button class="yes" id="m-yes">Yes</button></div>
   </div>
 </div>
 
@@ -538,14 +545,24 @@ setInterval(() => {
   e.className = "v " + (live ? "good" : "bad");
 }, 300);
 
-// ---- reset records, with confirmation ----
+// ---- confirmation box, shared by Reset records and Reboot ----
 const modal = $('modal');
-$('btn-reset').onclick = () => modal.classList.add('show');
+let pendingAction = null;
+const wsSend = m => { if (websocket && websocket.readyState === 1) websocket.send(m); };
+function ask(detail, yesLabel, action) {
+  $('m-small').textContent = detail;
+  $('m-yes').textContent = yesLabel;
+  pendingAction = action;
+  modal.classList.add('show');
+}
+$('btn-reset').onclick = () => ask('Max G, Max Amps, Min Volts and Max Avg Speed will all be reset to 0.', 'Yes, reset', () => wsSend('reset'));
+$('btn-reboot').onclick = () => ask('The board will restart. Motors lose their signal and the page reconnects in a few seconds.', 'Yes, reboot', () => wsSend('reboot'));
 $('m-no').onclick = () => modal.classList.remove('show');
 modal.onclick = e => { if (e.target === modal) modal.classList.remove('show'); };
 $('m-yes').onclick = () => {
-  if (websocket && websocket.readyState === 1) websocket.send('reset');
   modal.classList.remove('show');
+  if (pendingAction) pendingAction();
+  pendingAction = null;
 };
 
 // ---- fit everything on one screen: shrink the base font until nothing scrolls ----
@@ -941,6 +958,11 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
       if (len == 5 && memcmp(data, "reset", 5) == 0) resetRecords();
+      else if (len == 6 && memcmp(data, "reboot", 6) == 0) {
+        modeString = "Rebooting";
+        rebootAtMs = millis() + 500;
+        rebootPending = true;
+      }
       // tuning box edited on the page: "set,<index>,<value>"
       else if (len > 4 && len < 40 && memcmp(data, "set,", 4) == 0) {
         char buf[40];
@@ -1143,6 +1165,12 @@ void setup() {
 void loop() {
 
   ArduinoOTA.handle();
+
+  if (rebootPending && millis() > rebootAtMs) {
+    if (tuneDirty) saveTune();  // don't lose a tuning edit made in the last 2 seconds
+    Serial.println("Rebooting...");
+    ESP.restart();
+  }
 
   if (otaInProgress) {
     return;
