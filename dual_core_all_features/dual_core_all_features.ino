@@ -16,6 +16,8 @@
 #include <ArduinoJson.h>
 #include "esp_wifi.h"
 #include "driver/spi_master.h"
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>  // Required for ESP32
 
 spi_device_handle_t ledDev;
 
@@ -35,7 +37,8 @@ const char *password = "Whale#1234";
 uint32_t last_ota_time = 0;
 
 // 2. Initialize Servers
-WebServer server(80);
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 
 // 3. Variables to Monitor Live
 int liveCounter = 0;
@@ -57,6 +60,15 @@ int getSignalQuality(int dbm) {
 
   // Linearly map the range [-100, -50] onto [0, 100]
   return map(dbm, -100, -50, 0, 100);
+}
+
+// Handle WebSocket events (connect, disconnect, data)
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    Serial.println("Client connected");
+  } else if (type == WS_EVT_DISCONNECT) {
+    Serial.println("Client disconnected");
+  }
 }
 
 // iPhone-Optimized iOS UI Dashboard
@@ -113,27 +125,42 @@ const char index_html[] PROGMEM = R"rawliteral(
             <div class="row-item"><div class="label">System Status</div><div class="value" id="v-status">-</div></div>
         </div>
     <script>
-       const $ = id => document.getElementById(id);
+       // Open connection automatically using the current window host
+    const gateway = `ws://${window.location.host}/ws`;
+    let websocket;
 
-async function poll() {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 1500);
-  try {
-    const r = await fetch('/data', { signal: ctrl.signal, cache: 'no-store' });
-    const d = await r.json();
-    $('v-counter').innerText = d.counter;
-    $('v-temp').innerText = d.temp.toFixed(1) + ' °C';
-    $('v-hum').innerText = d.hum.toFixed(1) + ' %';
-    $('v-rssi').innerText = (d.rssi_raw === -127) ? 'Disconnected' : d.rssi_pct + '%';
-    $('v-bat').innerText = d.bat.toFixed(2) + ' V';
-    $('v-status').innerText = d.status;
-    $('v-status').style.color = (d.status === 'Optimal') ? '#30d158' : '#ff9f0a'; 
-  } finally {
-    clearTimeout(timer);
-    setTimeout(poll, 200);
-  }
-}
-poll();
+    function initWebSocket() {
+        console.log('Trying to open a WebSocket connection...');
+        websocket = new WebSocket(gateway);
+        websocket.onopen = onOpen;
+        websocket.onclose = onClose;
+        websocket.onmessage = onMessage;
+    }
+
+    function onOpen(event) {
+        console.log('Connection opened');
+    }
+
+    function onClose(event) {
+        console.log('Connection closed');
+        setTimeout(initWebSocket, 2000); // Auto-reconnect if lost
+    }
+
+    function onMessage(event) {
+        // Parse the incoming JSON stream
+        const data = JSON.parse(event.data);
+        
+        // Update DOM elements using the exact IDs defined in your HTML layout
+        if (data.counter !== undefined) document.getElementById('v-counter').innerText = data.counter;
+        if (data.temp    !== undefined) document.getElementById('v-temp').innerText    = data.temp.toFixed(1) + " °C";
+        if (data.hum     !== undefined) document.getElementById('v-hum').innerText     = data.hum.toFixed(1) + " %";
+        if (data.rssi_pct !== undefined) document.getElementById('v-rssi').innerText    = data.rssi_pct + " %";
+        if (data.bat     !== undefined) document.getElementById('v-bat').innerText     = data.bat.toFixed(2) + " V";
+        if (data.status  !== undefined) document.getElementById('v-status').innerText  = data.status;
+    }
+
+
+    window.addEventListener('load', initWebSocket);
     </script>
 </body>
 </html>
@@ -152,10 +179,6 @@ String getSerializedData() {
   String output;
   serializeJson(doc, output);
   return output;
-}
-
-void handleRoot() {
-  server.send(200, "text/html", index_html);
 }
 
 const int PIN_ESC1 = 1;
@@ -371,11 +394,6 @@ void imuTask(void *arg) {
   }
 }
 
-void handleData() {
-  server.sendHeader("Cache-Control", "no-store");
-  server.send(200, "application/json", getSerializedData());
-}
-
 void setup() {
   // running this code pulled from the .cpp to avoid waiting 2.5s esc if it were to call the funtion twice
   gpio_config_t cfg = {};
@@ -492,19 +510,21 @@ void setup() {
   WiFi.softAP(ssid, password);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-  server.on("/", handleRoot);
-  server.on("/data", handleData);
+  // Initialize WebSocket
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
+
+  // Serve static HTML page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", index_html);
+  });
+
   server.begin();
 
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
 
-  server.on("/", handleRoot);
-  server.begin();
-
   Serial.println("Servers initialized smoothly.");
-
-
 
   ArduinoOTA
     .onStart([]() {
@@ -580,6 +600,17 @@ void loop() {
     return;  // skip all your other code while updating
   }
 
+  unsigned long now = millis();
+  if (now - lastUpdate > 100) {
+    lastUpdate = now;
+
+    // Use your existing, comprehensive JSON serializer
+    String jsonString = getSerializedData();
+
+    // Send to all connected clients instantly over WebSockets
+    ws.textAll(jsonString);
+  }
+
   crsf.update();
   static uint32_t next = micros();
   static uint32_t lastPrint = 0;
@@ -592,7 +623,7 @@ void loop() {
     esc2.sendThrottle(0.08f);       // 8 %
   }
 
-  server.handleClient();
+  // server.handleClient();
 
   // Announce ourselves to the CRSF router once per second
   if (millis() - lastHeartbeatMs > 1000) {
@@ -609,39 +640,38 @@ void loop() {
     crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));   //mAh (24 bit field, max 16777215mAh)
     crsfBatt.remaining = (uint8_t)(esc2.temperatureC());            //percent
     crsf.queuePacket(CRSF_SYNC_BYTE, CRSF_FRAMETYPE_BATTERY_SENSOR, &crsfBatt, sizeof(crsfBatt));
-
-    // Native Station AP RSSI Logic
-    wifi_sta_list_t wifi_sta_list;
-    esp_wifi_ap_get_sta_list(&wifi_sta_list);
-
-    if (wifi_sta_list.num > 0) {
-      rssi = wifi_sta_list.sta[0].rssi;  // Note: added missing array index '[0]' to target first device
-    } else {
-      rssi = -127;
-    }
-
-    // Scale the signal
-    rssiPercentage = getSignalQuality(rssi);
-
-    // Core Variable Simulations
-    liveCounter++;
-    temperature += random(-10, 11) / 100.0;
-    humidity = RP;
-    batteryVoltage = esc1.voltage();
-
-    if (liveCounter % 50 == 0) {
-      statusString = (statusString == "Optimal") ? "Warning" : "Optimal";
-    }
-
-    String currentData = getSerializedData();
-
-    if (millis() - lastPrintMs > 100) {
-      lastPrintMs = millis();
-      printEverything();
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1));
   }
+  // Native Station AP RSSI Logic
+  wifi_sta_list_t wifi_sta_list;
+  esp_wifi_ap_get_sta_list(&wifi_sta_list);
+
+  if (wifi_sta_list.num > 0) {
+    rssi = wifi_sta_list.sta[0].rssi;  // Note: added missing array index '[0]' to target first device
+  } else {
+    rssi = -127;
+  }
+
+  // Scale the signal
+  rssiPercentage = getSignalQuality(rssi);
+
+  // Core Variable Simulations
+  liveCounter++;
+  temperature += random(-10, 11) / 100.0;
+  humidity = RP;
+  batteryVoltage = esc1.voltage();
+
+  if (liveCounter % 50 == 0) {
+    statusString = (statusString == "Optimal") ? "Warning" : "Optimal";
+  }
+
+  String currentData = getSerializedData();
+
+  if (millis() - lastPrintMs > 100) {
+    lastPrintMs = millis();
+    printEverything();
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(1));
 }
 
 void printEverything() {
