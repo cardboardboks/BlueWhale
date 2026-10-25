@@ -15,6 +15,9 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include "esp_wifi.h"
+#include "driver/spi_master.h"
+
+spi_device_handle_t ledDev;
 
 SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 //ArduinoOTA.setRebootOnSuccess(true);
@@ -109,8 +112,6 @@ const char index_html[] PROGMEM = R"rawliteral(
             <div class="row-item"><div class="label">Battery</div><div class="value" id="v-bat">0.00 V</div></div>
             <div class="row-item"><div class="label">System Status</div><div class="value" id="v-status">-</div></div>
         </div>
-        <div class="status-footer" id="ws-status">Connecting to network...</div>
-    </div>
     <script>
        const $ = id => document.getElementById(id);
 
@@ -129,7 +130,7 @@ async function poll() {
     $('v-status').style.color = (d.status === 'Optimal') ? '#30d158' : '#ff9f0a'; 
   } finally {
     clearTimeout(timer);
-    setTimeout(poll, 500);
+    setTimeout(poll, 200);
   }
 }
 poll();
@@ -178,13 +179,6 @@ ESPCpuMonitor cpuMonitor;  // you create the instance; only one can be active at
 #define NUM_LEDS 12
 #define SPI_FREQ 3200000  // 3.2 MHz
 
-// Classic ESP32 uses VSPI; ESP32-S2/S3/C3 use FSPI
-#if defined(CONFIG_IDF_TARGET_ESP32)
-SPIClass ledSPI(VSPI);
-#else
-SPIClass ledSPI(FSPI);
-#endif
-
 #define RESET_BYTES 64  // 64 bytes * 8 bits * 312.5 ns = ~160 us of low
 static uint8_t spiBuf[NUM_LEDS * 12 + RESET_BYTES];
 
@@ -208,6 +202,24 @@ void encodeByte(uint8_t v, uint8_t *out) {
   out[3] = lut[v & 3];
 }
 
+void ledInit() {
+  spi_bus_config_t bus = {};
+  bus.mosi_io_num = LED_PIN;
+  bus.miso_io_num = -1;
+  bus.sclk_io_num = 12;
+  bus.quadwp_io_num = -1;
+  bus.quadhd_io_num = -1;
+  bus.max_transfer_sz = sizeof(spiBuf);
+  spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
+
+  spi_device_interface_config_t dev = {};
+  dev.clock_speed_hz = SPI_FREQ;
+  dev.mode = 0;
+  dev.spics_io_num = -1;
+  dev.queue_size = 1;
+  spi_bus_add_device(SPI3_HOST, &dev, &ledDev);
+}
+
 void showLeds() {
   uint8_t *p = spiBuf;
   for (int i = 0; i < NUM_LEDS; i++) {
@@ -221,16 +233,17 @@ void showLeds() {
   }
   memset(p, 0, RESET_BYTES);  // latch
 
-  ledSPI.beginTransaction(SPISettings(SPI_FREQ, MSBFIRST, SPI_MODE0));
-  ledSPI.writeBytes(spiBuf, sizeof(spiBuf));
-  ledSPI.endTransaction();
+  spi_transaction_t t = {};
+  t.length = sizeof(spiBuf) * 8;  // in bits
+  t.tx_buffer = spiBuf;
+  spi_device_transmit(ledDev, &t);
 }
 
 // ---- LED task (runs on core 0) ----
 void ledTask(void *pvParameters) {
   // Init SPI inside the task so it's set up on core 0
   // begin(sck, miso, mosi, ss) -> only MOSI is used
-  ledSPI.begin(12, -1, LED_PIN, -1);
+  ledInit();
 
   uint8_t hue = 0;
   TickType_t lastWake = xTaskGetTickCount();
@@ -253,11 +266,9 @@ void ledTask(void *pvParameters) {
         }
       }
       hue++;
-      hue++;
-      hue++;
       showLeds();
     }
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(10));
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1));
   }
 }
 
