@@ -21,56 +21,46 @@
 spi_device_handle_t ledDev;
 
 SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
-//ArduinoOTA.setRebootOnSuccess(true);
 
 #define configTICK_RATE_HZ 2000
 
-// Add near the top with the other config
-IPAddress local_IP(192, 168, 10, 1);  // The ESP32's address
-IPAddress gateway(192, 168, 10, 1);   // Same as local_IP for an AP
+IPAddress local_IP(192, 168, 10, 1);
+IPAddress gateway(192, 168, 10, 1);
 IPAddress subnet(255, 255, 255, 0);
 
-// 1. Assign Access Point Network Credentials
 const char *ssid = "Whale";
 const char *password = "Whale#1234";
 uint32_t last_ota_time = 0;
 
-// 2. Initialize Servers
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-// 3. Variables to Monitor Live
-int liveCounter = 0;
-float temperature = 24.5;
-float humidity = 55.0;
-int rssi = -127;
-int rssiPercentage = 0;  // New variable to store 0-100% scale
-float batteryVoltage = 4.2;
-String statusString = "Optimal";
+// ---------------- Web dashboard variables ----------------
+String modeString = "Idle";       // <- set this from anywhere in your code
+String bootState = "Starting";    // <- updated during setup()
+String bulkText = "";             // <- free text box, put anything in here
+
+#define ARRAY_SIZE 20
+volatile bool flagArray[ARRAY_SIZE];  // <- set any slot true to light its green dot
+
+volatile int16_t imuSpare1 = 0;  // two spare IMU fields
+volatile int16_t imuSpare2 = 0;
+
+float throttleCmd1 = 0.08f;  // 0.0 - 1.0, what you send to the ESC
+float throttleCmd2 = 0.08f;
 
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
 
-// Helper function to scale dBm to a reliable 0-100% signal metric
+// Scale dBm to 0-100 %
 int getSignalQuality(int dbm) {
-  if (dbm == -127) return 0;   // Disconnected state
-  if (dbm >= -50) return 100;  // Excellent signal is capped at 100%
-  if (dbm <= -100) return 0;   // Unusable signal is capped at 0%
-
-  // Linearly map the range [-100, -50] onto [0, 100]
+  if (dbm == -127) return 0;
+  if (dbm >= -50) return 100;
+  if (dbm <= -100) return 0;
   return map(dbm, -100, -50, 0, 100);
 }
 
-// Handle WebSocket events (connect, disconnect, data)
-void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-  if (type == WS_EVT_CONNECT) {
-    Serial.println("Client connected");
-  } else if (type == WS_EVT_DISCONNECT) {
-    Serial.println("Client disconnected");
-  }
-}
-
-// iPhone-Optimized iOS UI Dashboard
+// ---------------- Web page ----------------
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
@@ -89,97 +79,145 @@ const char index_html[] PROGMEM = R"rawliteral(
             --text-muted: #8e8e93;
             --accent: #0a84ff;
             --success: #30d158;
+            --bad: #ff453a;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-            background-color: var(--bg-color); 
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
             color: var(--text-main);
             padding: 30px 20px env(safe-area-inset-bottom);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+            display: flex; flex-direction: column; align-items: center;
         }
-        .phone-wrapper { width: 100%; max-width: 375px; }
+        .phone-wrapper { width: 100%; max-width: 420px; }
         h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 25px; padding-left: 5px; }
+        h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin: 0 0 8px 8px; }
         .list-group { background: var(--card-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--border-color); border-radius: 14px; overflow: hidden; margin-bottom: 20px; }
-        .row-item { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border-color); }
+        .row-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--border-color); gap: 12px; }
         .row-item:last-child { border-bottom: none; }
         .label { font-size: 16px; font-weight: 500; }
-        .value { font-size: 16px; font-weight: 400; color: var(--text-muted); }
-        #v-counter { color: var(--accent); font-weight: 600; }
-        #v-status { font-weight: 600; }
-        .status-footer { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 15px; }
+        .value { font-size: 16px; font-weight: 400; color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+        .bulk { padding: 14px 20px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; min-height: 60px; max-height: 200px; overflow-y: auto; }
+        .dots { display: grid; grid-template-columns: repeat(10, 1fr); gap: 10px; padding: 16px 20px; justify-items: center; }
+        .dot { width: 16px; height: 16px; border-radius: 50%; background: rgba(255,255,255,0.12); }
+        .dot.on { background: var(--success); box-shadow: 0 0 8px var(--success); }
+        .good { color: var(--success) !important; }
+        .bad { color: var(--bad) !important; }
     </style>
 </head>
 <body>
     <div class="phone-wrapper">
         <h1>🐋🐋 Whale Stats 🐋🐋</h1>
-        <div class="list-group">
-            <div class="row-item"><div class="label">Live Counter</div><div class="value" id="v-counter">0</div></div>
-            <div class="row-item"><div class="label">Temperature</div><div class="value" id="v-temp">0.0 °C</div></div>
-            <div class="row-item"><div class="label">Humidity</div><div class="value" id="v-hum">0.0 %</div></div>
-            <div class="row-item"><div class="label">Signal Strength</div><div class="value" id="v-rssi">-- %</div></div>
-            <div class="row-item"><div class="label">Battery</div><div class="value" id="v-bat">0.00 V</div></div>
-            <div class="row-item"><div class="label">System Status</div><div class="value" id="v-status">-</div></div>
-        </div>
-    <script>
-       // Open connection automatically using the current window host
-    const gateway = `ws://${window.location.host}/ws`;
-    let websocket;
+        <div id="root"></div>
+    </div>
+<script>
+// Each section: [title, [[label, id], ...]]
+const SECTIONS = [
+  ["Status", [["Page Data","v-live"],["Mode","v-mode"],["Boot State","v-boot"]]],
+  ["CPU Load", [["Core 0","v-c0"],["Core 1","v-c1"],["Average","v-ca"]]],
+];
+for (let n = 1; n <= 2; n++) {
+  SECTIONS.push(["ESC " + n, [
+    ["Throttle","e"+n+"-thr"],["Voltage","e"+n+"-v"],["Current","e"+n+"-a"],
+    ["Temperature","e"+n+"-t"],["RPM","e"+n+"-rpm"],["Speed","e"+n+"-spd"],["Link","e"+n+"-link"]
+  ]]);
+}
+const rx = [["Link","rx-up"],["Link Quality","rx-lq"],["RSSI","rx-rssi"],["dBm","rx-dbm"]];
+for (let c = 1; c <= 8; c++) rx.push(["Channel " + c, "rx-ch" + c]);
+SECTIONS.push(["Receiver", rx]);
+SECTIONS.push(["IMU", [
+  ["Gyro X","i-gx"],["Gyro Y","i-gy"],["Gyro Z","i-gz"],
+  ["Accel X","i-ax"],["Accel Y","i-ay"],["Accel Z","i-az"],
+  ["Spare 1","i-s1"],["Spare 2","i-s2"]
+]]);
 
-    function initWebSocket() {
-        console.log('Trying to open a WebSocket connection...');
-        websocket = new WebSocket(gateway);
-        websocket.onopen = onOpen;
-        websocket.onclose = onClose;
-        websocket.onmessage = onMessage;
+const root = document.getElementById('root');
+function build() {
+  let html = "";
+  for (const [title, rows] of SECTIONS) {
+    html += `<h2>${title}</h2><div class="list-group">`;
+    for (const [label, id] of rows)
+      html += `<div class="row-item"><div class="label">${label}</div><div class="value" id="${id}">--</div></div>`;
+    html += `</div>`;
+    if (title === "Status") {
+      html += `<h2>Bulk Text</h2><div class="list-group"><div class="bulk" id="v-bulk"></div></div>`;
     }
+  }
+  html += `<h2>Array</h2><div class="list-group"><div class="dots">`;
+  for (let i = 0; i < 20; i++) html += `<div class="dot" id="d${i}"></div>`;
+  html += `</div></div>`;
+  root.innerHTML = html;
+}
+build();
 
-    function onOpen(event) {
-        console.log('Connection opened');
-    }
+const $ = id => document.getElementById(id);
+const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+const f = (v, d) => (v === undefined || v === null) ? "--" : Number(v).toFixed(d);
 
-    function onClose(event) {
-        console.log('Connection closed');
-        setTimeout(initWebSocket, 2000); // Auto-reconnect if lost
-    }
+let websocket, lastMsg = 0;
 
-    function onMessage(event) {
-        // Parse the incoming JSON stream
-        const data = JSON.parse(event.data);
-        
-        // Update DOM elements using the exact IDs defined in your HTML layout
-        if (data.counter !== undefined) document.getElementById('v-counter').innerText = data.counter;
-        if (data.temp    !== undefined) document.getElementById('v-temp').innerText    = data.temp.toFixed(1) + " °C";
-        if (data.hum     !== undefined) document.getElementById('v-hum').innerText     = data.hum.toFixed(1) + " %";
-        if (data.rssi_pct !== undefined) document.getElementById('v-rssi').innerText    = data.rssi_pct + " %";
-        if (data.bat     !== undefined) document.getElementById('v-bat').innerText     = data.bat.toFixed(2) + " V";
-        if (data.status  !== undefined) document.getElementById('v-status').innerText  = data.status;
-    }
+function initWebSocket() {
+  websocket = new WebSocket(`ws://${window.location.host}/ws`);
+  websocket.onclose = () => setTimeout(initWebSocket, 2000);
+  websocket.onmessage = onMessage;
+}
 
+function onMessage(event) {
+  const d = JSON.parse(event.data);
+  lastMsg = Date.now();
 
-    window.addEventListener('load', initWebSocket);
-    </script>
+  set('v-mode', d.mode);
+  set('v-boot', d.boot);
+  $('v-bulk').textContent = d.bulk || "";
+
+  if (d.cpu) { set('v-c0', f(d.cpu[0],1)+" %"); set('v-c1', f(d.cpu[1],1)+" %"); set('v-ca', f(d.cpu[2],1)+" %"); }
+
+  if (d.esc) d.esc.forEach((e, i) => {
+    const n = i + 1;
+    set(`e${n}-thr`, f(e.thr,0)+" %");
+    set(`e${n}-v`,   f(e.v,1)+" V");
+    set(`e${n}-a`,   f(e.a,1)+" A");
+    set(`e${n}-t`,   f(e.t,0)+" °C");
+    set(`e${n}-rpm`, f(e.rpm,0));
+    set(`e${n}-spd`, f(e.spd,1)+" km/h");
+    set(`e${n}-link`,f(e.link,0)+" %");
+  });
+
+  if (d.rx) {
+    const up = $('rx-up');
+    up.textContent = d.rx.up ? "UP" : "DOWN";
+    up.className = "value " + (d.rx.up ? "good" : "bad");
+    set('rx-lq', d.rx.lq + " %");
+    set('rx-rssi', d.rx.rssi + " %");
+    set('rx-dbm', d.rx.dbm + " dBm");
+    (d.rx.ch || []).forEach((v, i) => set('rx-ch' + (i + 1), v));
+  }
+
+  if (d.imu) {
+    const m = d.imu;
+    set('i-gx', m.gx); set('i-gy', m.gy); set('i-gz', m.gz);
+    set('i-ax', m.ax); set('i-ay', m.ay); set('i-az', m.az);
+    set('i-s1', m.s1); set('i-s2', m.s2);
+  }
+
+  if (d.arr) d.arr.forEach((v, i) => $('d' + i).classList.toggle('on', !!v));
+}
+
+// "Page Data" shows LIVE only while messages keep arriving
+setInterval(() => {
+  const live = (Date.now() - lastMsg) < 1000;
+  const e = $('v-live');
+  e.textContent = live ? "LIVE" : "STALE";
+  e.className = "value " + (live ? "good" : "bad");
+}, 300);
+
+window.addEventListener('load', initWebSocket);
+</script>
 </body>
 </html>
 )rawliteral";
 
-String getSerializedData() {
-  JsonDocument doc;
-  doc["counter"] = liveCounter;
-  doc["temp"] = temperature;
-  doc["hum"] = humidity;
-  doc["rssi_raw"] = rssi;            // Keeping raw data as fallback
-  doc["rssi_pct"] = rssiPercentage;  // Clean 0-100% scaling
-  doc["bat"] = batteryVoltage;
-  doc["status"] = statusString;
-
-  String output;
-  serializeJson(doc, output);
-  return output;
-}
-
+// ---------------- Hardware ----------------
 const int PIN_ESC1 = 1;
 const int PIN_ESC2 = 2;
 const uint8_t MOTOR_POLES = 14;
@@ -187,7 +225,7 @@ const uint8_t MOTOR_POLES = 14;
 AlfredoDShot esc1;
 AlfredoDShot esc2;
 
-ESPCpuMonitor cpuMonitor;  // you create the instance; only one can be active at a time
+ESPCpuMonitor cpuMonitor;
 
 #define PIN_RX 5
 #define PIN_TX 4
@@ -196,12 +234,11 @@ ESPCpuMonitor cpuMonitor;  // you create the instance; only one can be active at
 #define SDA_PIN 7
 #define INT_PIN 8
 
-
-#define LED_PIN 11  // This becomes the SPI MOSI pin (any GPIO works via the GPIO matrix)
+#define LED_PIN 11
 #define NUM_LEDS 12
-#define SPI_FREQ 3200000  // 3.2 MHz
+#define SPI_FREQ 3200000
 
-#define RESET_BYTES 64  // 64 bytes * 8 bits * 312.5 ns = ~160 us of low
+#define RESET_BYTES 64
 static uint8_t spiBuf[NUM_LEDS * 12 + RESET_BYTES];
 
 struct RGB {
@@ -209,12 +246,11 @@ struct RGB {
 };
 RGB leds[NUM_LEDS];
 
-// Lookup: 2 data bits -> 1 SPI byte (two WS2812 bits = 8 SPI bits)
 static const uint8_t lut[4] = {
-  0b10001000,  // 00
-  0b10001110,  // 01
-  0b11101000,  // 10
-  0b11101110   // 11
+  0b10001000,
+  0b10001110,
+  0b11101000,
+  0b11101110
 };
 
 void encodeByte(uint8_t v, uint8_t *out) {
@@ -245,7 +281,6 @@ void ledInit() {
 void showLeds() {
   uint8_t *p = spiBuf;
   for (int i = 0; i < NUM_LEDS; i++) {
-    // WS2812 expects GRB order
     encodeByte(leds[i].g, p);
     p += 4;
     encodeByte(leds[i].r, p);
@@ -253,18 +288,15 @@ void showLeds() {
     encodeByte(leds[i].b, p);
     p += 4;
   }
-  memset(p, 0, RESET_BYTES);  // latch
+  memset(p, 0, RESET_BYTES);
 
   spi_transaction_t t = {};
-  t.length = sizeof(spiBuf) * 8;  // in bits
+  t.length = sizeof(spiBuf) * 8;
   t.tx_buffer = spiBuf;
   spi_device_transmit(ledDev, &t);
 }
 
-// ---- LED task (runs on core 0) ----
 void ledTask(void *pvParameters) {
-  // Init SPI inside the task so it's set up on core 0
-  // begin(sck, miso, mosi, ss) -> only MOSI is used
   ledInit();
 
   uint8_t hue = 0;
@@ -272,10 +304,8 @@ void ledTask(void *pvParameters) {
 
   for (;;) {
     if (otaInProgress == false) {
-      // Simple rainbow chase
       for (int i = 0; i < NUM_LEDS; i++) {
         uint8_t h = hue + i * (256 / NUM_LEDS);
-        // quick HSV(h,255,64) -> RGB
         uint8_t region = h / 43, rem = (h - region * 43) * 6;
         uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
         switch (region) {
@@ -291,13 +321,6 @@ void ledTask(void *pvParameters) {
       showLeds();
     }
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1));
-  }
-}
-
-void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType type,
-               void *arg, uint8_t *data, size_t len) {
-  if (type == WS_EVT_CONNECT) {
-    client->text(getSerializedData());  // send current values immediately
   }
 }
 
@@ -323,33 +346,29 @@ int Yreadings[YnumReadings];
 int YreadIndex = 0;
 int Ytotal = 0;
 
-// Shared between the IMU task (core 0) and loop() (core 1).
-// volatile because they are written on one core and read on the other.
-volatile int RP = 0;  // smoothed roll+pitch
-volatile int Y = 0;   // smoothed yaw rate
+volatile int RP = 0;
+volatile int Y = 0;
+
+// Raw IMU values for the web page (written on core 0, read on core 1)
+volatile int16_t imuGx = 0, imuGy = 0, imuGz = 0;
+volatile int16_t imuAx = 0, imuAy = 0, imuAz = 0;
 
 volatile float core0 = 0;
 volatile float core1 = 0;
 volatile float coreA = 0;
 
-int throttle1 = 1500;
-int throttle2 = 1500;
-int drive1_pwm = 0;
-int drive2_pwm = 0;
 int gearbox_ratio1 = 19;
 int gearbox_ratio2 = 19;
 int wheel_diamiter1 = 101;  // in mm
 int wheel_diamiter2 = 101;  // in mm
 
-
-const unsigned long INTERVAL_US = 1000;  // 1000 µs = 1 ms
+const unsigned long INTERVAL_US = 1000;
 unsigned long previousMicros = 0;
 
 MPU6050 mpu;
 
 TaskHandle_t imuTaskHandle = nullptr;
 
-// MPU interrupt: wake the IMU task. No polling, no delay needed.
 void IRAM_ATTR dmpDataReady() {
   BaseType_t woken = pdFALSE;
   vTaskNotifyGiveFromISR(imuTaskHandle, &woken);
@@ -359,16 +378,14 @@ void IRAM_ATTR dmpDataReady() {
 uint8_t fifoBuffer[64];
 Quaternion q;
 VectorFloat gravity;
-VectorInt16 gy;  // [x, y, z] gyro sensor measurements
+VectorInt16 gy;  // gyro
+VectorInt16 aa;  // accel
 float ypr[3];
 bool dmpReady = false;
 
-// All IMU work lives here, pinned to core 0.
 void imuTask(void *arg) {
   if (otaInProgress == false) {
     for (;;) {
-      // Sleep until the MPU interrupt fires. The 100 ms timeout recovers from a
-      // missed interrupt, and the idle task always gets to run so the watchdog is happy.
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
 
       if (!mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) continue;
@@ -387,6 +404,15 @@ void imuTask(void *arg) {
       RP = RPtotal / RPnumReadings;
 
       mpu.dmpGetGyro(&gy, fifoBuffer);
+      mpu.dmpGetAccel(&aa, fifoBuffer);
+
+      imuGx = gy.x;
+      imuGy = gy.y;
+      imuGz = gy.z;
+      imuAx = aa.x;
+      imuAy = aa.y;
+      imuAz = aa.z;
+
       yaw = abs(gy.z);
 
       Ytotal -= Yreadings[YreadIndex];
@@ -400,8 +426,85 @@ void imuTask(void *arg) {
   }
 }
 
+// ---------------- JSON for the web page ----------------
+void addEsc(JsonArray arr, AlfredoDShot &e, float thrCmd, int gear, int wheel) {
+  JsonObject o = arr.add<JsonObject>();
+  float rpmOut = e.rpm() / gear;
+  o["thr"] = thrCmd * 100.0f;
+  o["v"] = e.voltage();
+  o["a"] = e.current();
+  o["t"] = e.temperatureC();
+  o["rpm"] = rpmOut;
+  o["spd"] = (wheel / 10) * rpmOut * 0.001885;
+  o["link"] = (float)e.lossPercent();  // adjust if you want a different "link" metric
+}
+
+String getSerializedData() {
+  JsonDocument doc;
+
+  doc["mode"] = modeString;
+  doc["boot"] = bootState;
+  doc["bulk"] = bulkText;
+
+  // CPU: per core + average
+  float c0 = core0, c1 = core1, ca = coreA;
+  JsonArray cpu = doc["cpu"].to<JsonArray>();
+  cpu.add(c0);
+  cpu.add(c1);
+  cpu.add(ca);
+
+  // ESCs
+  JsonArray escs = doc["esc"].to<JsonArray>();
+  addEsc(escs, esc1, throttleCmd1, gearbox_ratio1, wheel_diamiter1);
+  addEsc(escs, esc2, throttleCmd2, gearbox_ratio2, wheel_diamiter2);
+
+  // Receiver
+  JsonObject rx = doc["rx"].to<JsonObject>();
+  const crsfLinkStatistics_t *link = crsf.getLinkStatistics();
+  int dbm = -(int)(link->active_antenna == 0 ? link->uplink_RSSI_1 : link->uplink_RSSI_2);
+  rx["up"] = crsf.isLinkUp();
+  rx["lq"] = link->uplink_Link_quality;
+  rx["rssi"] = getSignalQuality(dbm);
+  rx["dbm"] = dbm;
+  JsonArray ch = rx["ch"].to<JsonArray>();
+  for (int i = 1; i <= 8; i++) ch.add(crsf.getChannel(i));
+
+  // IMU
+  JsonObject imu = doc["imu"].to<JsonObject>();
+  imu["gx"] = (int)imuGx;
+  imu["gy"] = (int)imuGy;
+  imu["gz"] = (int)imuGz;
+  imu["ax"] = (int)imuAx;
+  imu["ay"] = (int)imuAy;
+  imu["az"] = (int)imuAz;
+  imu["s1"] = (int)imuSpare1;
+  imu["s2"] = (int)imuSpare2;
+
+  // Bool array -> dots
+  JsonArray arr = doc["arr"].to<JsonArray>();
+  for (int i = 0; i < ARRAY_SIZE; i++) arr.add(flagArray[i] ? 1 : 0);
+
+  String output;
+  serializeJson(doc, output);
+  return output;
+}
+
+void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType type,
+               void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    client->text(getSerializedData());  // send current values immediately
+  }
+}
+
+// Push a web update right now (used during boot, when loop() isn't running yet)
+void pushWeb() {
+  ws.textAll(getSerializedData());
+  ws.cleanupClients();
+}
+
 void setup() {
-  // running this code pulled from the .cpp to avoid waiting 2.5s esc if it were to call the funtion twice
+  bootState = "GPIO init";
+
   gpio_config_t cfg = {};
   cfg.pin_bit_mask = 1ULL << PIN_ESC1;
   cfg.mode = GPIO_MODE_OUTPUT_OD;
@@ -415,31 +518,32 @@ void setup() {
   gpio_config(&cfg);
   gpio_set_level((gpio_num_t)PIN_ESC2, 0);
 
-
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000);
 
   Serial.println("ELRS 4.x receiver test");
 
+  bootState = "Receiver init";
   crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
   if (!crsfSerial)
     while (1) Serial.println("Invalid crsfSerial configuration");
 
-  crsf.begin(crsfSerial);             // defaults to CRSF_ADDRESS_FLIGHT_CONTROLLER
-  crsf.setDeviceName("AlfredoCRSF");  // answer device discovery pings
+  crsf.begin(crsfSerial);
+  crsf.setDeviceName("AlfredoCRSF");
 
   for (int i = 0; i < RPnumReadings; i++) RPreadings[i] = 0;
   for (int i = 0; i < YnumReadings; i++) Yreadings[i] = 0;
+  for (int i = 0; i < ARRAY_SIZE; i++) flagArray[i] = false;
 
+  bootState = "IMU init";
   mpu.initialize();
   if (!mpu.testConnection()) {
     Serial.println("MPU6050 not found - check wiring/address");
     while (1) delay(1000);
   }
 
-  uint8_t devStatus = mpu.dmpInitialize();  // uploads DMP firmware (~1.9 KB)
+  uint8_t devStatus = mpu.dmpInitialize();
 
-  // supply your own gyro offsets here, scaled for min sensitivity
   mpu.setXGyroOffset(-234);
   mpu.setYGyroOffset(24);
   mpu.setZGyroOffset(-9);
@@ -448,31 +552,10 @@ void setup() {
   mpu.setZAccelOffset(2538);
 
   if (devStatus == 0) {
-    // mpu.CalibrateAccel(6);  // keep the sensor flat and still during this
-    // mpu.CalibrateGyro(6);
     mpu.setDMPEnabled(true);
 
-    // Create the task BEFORE attaching the interrupt: the ISR needs a valid handle.
-    xTaskCreatePinnedToCore(
-      imuTask,         // task function
-      "imu_0",         // name
-      4096,            // stack size (bytes)
-      nullptr,         // parameter
-      2,               // priority
-      &imuTaskHandle,  // task handle (not needed)
-      0                // core 0
-    );
-
-    xTaskCreatePinnedToCore(
-      ledTask,    // task function
-      "ledTask",  // name
-      4096,       // stack size (bytes)
-      NULL,       // parameter
-      1,          // priority
-      NULL,       // task handle (not needed)
-      0           // core 0
-    );
-
+    xTaskCreatePinnedToCore(imuTask, "imu_0", 4096, nullptr, 2, &imuTaskHandle, 0);
+    xTaskCreatePinnedToCore(ledTask, "ledTask", 4096, NULL, 1, NULL, 0);
 
     pinMode(INT_PIN, INPUT);
     attachInterrupt(digitalPinToInterrupt(INT_PIN), dmpDataReady, RISING);
@@ -480,16 +563,16 @@ void setup() {
     dmpReady = true;
     Serial.println("DMP ready");
   } else {
-    // 1 = memory load failed, 2 = DMP config update failed
     Serial.printf("DMP init failed (code %d)\n", devStatus);
     while (1) delay(1000);
   }
 
+  bootState = "CPU monitor init";
   CpuMonitorConfig cpucfg;
   cpucfg.sampleIntervalMs = 10;
-  cpucfg.calibrationSamples = 5;     // first 5 windows = "100% idle" baseline
-  cpucfg.enablePerCore = true;       // separate core0/core1 values
-  cpucfg.enableTemperature = false;  // not needed here
+  cpucfg.calibrationSamples = 5;
+  cpucfg.enablePerCore = true;
+  cpucfg.enableTemperature = false;
 
   if (!cpuMonitor.init(cpucfg)) {
     Serial.println("CPU monitor init failed");
@@ -502,6 +585,7 @@ void setup() {
     coreA = s.average;
   });
 
+  bootState = "WiFi AP start";
   Serial.println("\nConfiguring Access Point...");
 
   WiFi.mode(WIFI_AP);
@@ -512,11 +596,9 @@ void setup() {
   WiFi.softAP(ssid, password);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-  // Initialize WebSocket
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
 
-  // Serve static HTML page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send_P(200, "text/html", index_html);
   });
@@ -525,26 +607,23 @@ void setup() {
 
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
-
   Serial.println("Servers initialized smoothly.");
 
   ArduinoOTA
     .onStart([]() {
       otaInProgress = true;
+      modeString = "OTA update";
       String type;
       if (ArduinoOTA.getCommand() == U_FLASH) {
         type = "sketch";
-      } else {  // U_SPIFFS
+      } else {
         type = "filesystem";
       }
-
-      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
       Serial.println("Start updating " + type);
     })
     .onEnd([]() {
       otaInProgress = false;
       Serial.println("\nEnd");
-      // ESP.restart();
     })
     .onProgress([](unsigned int progress, unsigned int total) {
       if (millis() - last_ota_time > 500) {
@@ -569,8 +648,7 @@ void setup() {
 
   ArduinoOTA.begin();
 
-
-  // wait for boot and set leds to booting colour
+  bootState = "Waiting 2s";
   for (unsigned long start = millis(); millis() - start < 2000;) {
   }
 
@@ -578,20 +656,30 @@ void setup() {
   esc2.begin(PIN_ESC1, DSHOT600, true, MOTOR_POLES);
   esc1.begin(PIN_ESC2, DSHOT600, true, MOTOR_POLES);
 
-  // wait for ESC to boot before enabling EDT
+  bootState = "Waiting for ESC boot";
+  unsigned long lastBootPush = 0;
   for (unsigned long start = millis(); millis() - start < 5000;) {
     unsigned long currentMicros = micros();
 
     if (currentMicros - previousMicros >= INTERVAL_US) {
-      previousMicros += INTERVAL_US;  // drift-free
-      esc1.sendThrottle(0.f);         // 0 %
-      esc2.sendThrottle(0.f);         // 0 %
+      previousMicros += INTERVAL_US;
+      esc1.sendThrottle(0.f);
+      esc2.sendThrottle(0.f);
+    }
+
+    // keep the web page updating during the ESC wait (slow, so it won't upset DShot timing much)
+    if (millis() - lastBootPush > 250) {
+      lastBootPush = millis();
+      pushWeb();
     }
   }
 
-  // enable EDT
+  bootState = "Enabling EDT";
   esc1.command(DSHOT_CMD_EDT_ENABLE);
   esc2.command(DSHOT_CMD_EDT_ENABLE);
+
+  bootState = "Ready";
+  modeString = "Running";
 }
 
 void loop() {
@@ -599,35 +687,25 @@ void loop() {
   ArduinoOTA.handle();
 
   if (otaInProgress) {
-    return;  // skip all your other code while updating
+    return;
   }
 
   unsigned long now = millis();
   if (now - lastUpdate > 100) {
     lastUpdate = now;
-
-    // Use your existing, comprehensive JSON serializer
-    String jsonString = getSerializedData();
-
-    // Send to all connected clients instantly over WebSockets
-    ws.textAll(jsonString);
+    ws.textAll(getSerializedData());
   }
 
   crsf.update();
-  static uint32_t next = micros();
-  static uint32_t lastPrint = 0;
 
   unsigned long currentMicros = micros();
 
   if (currentMicros - previousMicros >= INTERVAL_US) {
-    previousMicros += INTERVAL_US;  // drift-free
-    esc1.sendThrottle(0.08f);       // 8 %
-    esc2.sendThrottle(0.08f);       // 8 %
+    previousMicros += INTERVAL_US;
+    esc1.sendThrottle(throttleCmd1);
+    esc2.sendThrottle(throttleCmd2);
   }
 
-  // server.handleClient();
-
-  // Announce ourselves to the CRSF router once per second
   if (millis() - lastHeartbeatMs > 1000) {
     lastHeartbeatMs = millis();
     crsf.sendHeartbeat();
@@ -637,36 +715,21 @@ void loop() {
 
     crsf_sensor_battery_t crsfBatt = { 0 };
 
-    crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));  //Volts
-    crsfBatt.current = htobe16((uint16_t)(esc2.voltage() * 10.0));  //Amps
-    crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));   //mAh (24 bit field, max 16777215mAh)
-    crsfBatt.remaining = (uint8_t)(esc2.temperatureC());            //percent
+    crsfBatt.voltage = htobe16((uint16_t)(esc1.voltage() * 10.0));
+    crsfBatt.current = htobe16((uint16_t)(esc2.voltage() * 10.0));
+    crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));
+    crsfBatt.remaining = (uint8_t)(esc2.temperatureC());
     crsf.queuePacket(CRSF_SYNC_BYTE, CRSF_FRAMETYPE_BATTERY_SENSOR, &crsfBatt, sizeof(crsfBatt));
   }
-  // Native Station AP RSSI Logic
-  wifi_sta_list_t wifi_sta_list;
-  esp_wifi_ap_get_sta_list(&wifi_sta_list);
 
-  if (wifi_sta_list.num > 0) {
-    rssi = wifi_sta_list.sta[0].rssi;  // Note: added missing array index '[0]' to target first device
-  } else {
-    rssi = -127;
+  // ---- DEMO: remove these once you drive the array / text yourself ----
+  static int demoTick = 0;
+  if (++demoTick % 100 == 0) {
+    int pos = (demoTick / 100) % ARRAY_SIZE;
+    for (int i = 0; i < ARRAY_SIZE; i++) flagArray[i] = (i == pos);
+    bulkText = "Demo text, tick " + String(demoTick) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
   }
-
-  // Scale the signal
-  rssiPercentage = getSignalQuality(rssi);
-
-  // Core Variable Simulations
-  liveCounter++;
-  temperature += random(-10, 11) / 100.0;
-  humidity = RP;
-  batteryVoltage = esc1.voltage();
-
-  if (liveCounter % 50 == 0) {
-    statusString = (statusString == "Optimal") ? "Warning" : "Optimal";
-  }
-
-  String currentData = getSerializedData();
+  // ----------------------------------------------------------------------
 
   if (millis() - lastPrintMs > 100) {
     lastPrintMs = millis();
@@ -695,8 +758,8 @@ void printEverything() {
 
   Serial.println("");
   Serial.printf(
-    "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   |",
-    (throttle1 - 1500) / 5,
+    "%.0f %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   |",
+    throttleCmd1 * 100.0f,
     esc1.voltage(),
     esc1.current(),
     esc1.temperatureC(),
@@ -705,8 +768,8 @@ void printEverything() {
   Serial.println(esc1.lossPercent());
 
   Serial.printf(
-    "%d %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   |",
-    (throttle2 - 1500) / 5,
+    "%.0f %% | %3.1f V | %2.0f A | %2.0f C | %4.0f | %3.0f Km/h   |",
+    throttleCmd2 * 100.0f,
     esc2.voltage(),
     esc2.current(),
     esc2.temperatureC(),
