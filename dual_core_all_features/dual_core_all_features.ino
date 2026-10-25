@@ -20,7 +20,6 @@
 spi_device_handle_t ledDev;
 
 SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
-//ArduinoOTA.setRebootOnSuccess(true);
 
 #define configTICK_RATE_HZ 2000
 
@@ -130,7 +129,7 @@ async function poll() {
     $('v-status').style.color = (d.status === 'Optimal') ? '#30d158' : '#ff9f0a'; 
   } finally {
     clearTimeout(timer);
-    setTimeout(poll, 200);
+    setTimeout(poll, 50);
   }
 }
 poll();
