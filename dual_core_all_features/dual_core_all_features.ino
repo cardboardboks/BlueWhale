@@ -16,6 +16,7 @@
 #include "esp_wifi.h"
 #include "driver/spi_master.h"
 #include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>  // Required for ESP32
 
 spi_device_handle_t ledDev;
 
@@ -58,6 +59,15 @@ int getSignalQuality(int dbm) {
 
   // Linearly map the range [-100, -50] onto [0, 100]
   return map(dbm, -100, -50, 0, 100);
+}
+
+// Handle WebSocket events (connect, disconnect, data)
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    Serial.println("Client connected");
+  } else if (type == WS_EVT_DISCONNECT) {
+    Serial.println("Client disconnected");
+  }
 }
 
 // iPhone-Optimized iOS UI Dashboard
@@ -114,30 +124,42 @@ const char index_html[] PROGMEM = R"rawliteral(
             <div class="row-item"><div class="label">System Status</div><div class="value" id="v-status">-</div></div>
         </div>
     <script>
-      let socket;
-const $ = id => document.getElementById(id);
-function connect() {
-  socket = new WebSocket('ws://' + location.host + '/ws');
-  socket.onopen = () => { $('ws-status').innerText = 'CONNECTED TO WHALE'; $('ws-status').style.color = '#30d158'; };
-  socket.onmessage = (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      $('v-counter').innerText = d.counter;
-      $('v-temp').innerText = d.temp.toFixed(1) + ' °C';
-      $('v-hum').innerText = d.hum.toFixed(1) + ' %';
-      $('v-rssi').innerText = (d.rssi_raw === -127) ? 'Disconnected' : d.rssi_pct + '%';
-      $('v-bat').innerText = d.bat.toFixed(2) + ' V';
-      $('v-status').innerText = d.status;
-      $('v-status').style.color = (d.status === 'Optimal') ? '#30d158' : '#ff9f0a';
-    } catch (err) { console.error(err); }
-  };
-  socket.onclose = () => {
-    $('ws-status').innerText = 'DISCONNECTED - retrying...';
-    $('ws-status').style.color = '#ff453a';
-    setTimeout(connect, 1000);
-  };
-}
-connect();
+       // Open connection automatically using the current window host
+    const gateway = `ws://${window.location.host}/ws`;
+    let websocket;
+
+    function initWebSocket() {
+        console.log('Trying to open a WebSocket connection...');
+        websocket = new WebSocket(gateway);
+        websocket.onopen = onOpen;
+        websocket.onclose = onClose;
+        websocket.onmessage = onMessage;
+    }
+
+    function onOpen(event) {
+        console.log('Connection opened');
+    }
+
+    function onClose(event) {
+        console.log('Connection closed');
+        setTimeout(initWebSocket, 2000); // Auto-reconnect if lost
+    }
+
+    function onMessage(event) {
+        // Parse the incoming JSON stream
+        const data = JSON.parse(event.data);
+        
+        // Update DOM elements using the exact IDs defined in your HTML layout
+        if (data.counter !== undefined) document.getElementById('v-counter').innerText = data.counter;
+        if (data.temp    !== undefined) document.getElementById('v-temp').innerText    = data.temp.toFixed(1) + " °C";
+        if (data.hum     !== undefined) document.getElementById('v-hum').innerText     = data.hum.toFixed(1) + " %";
+        if (data.rssi_pct !== undefined) document.getElementById('v-rssi').innerText    = data.rssi_pct + " %";
+        if (data.bat     !== undefined) document.getElementById('v-bat').innerText     = data.bat.toFixed(2) + " V";
+        if (data.status  !== undefined) document.getElementById('v-status').innerText  = data.status;
+    }
+
+
+    window.addEventListener('load', initWebSocket);
     </script>
 </body>
 </html>
@@ -490,19 +512,21 @@ void setup() {
   WiFi.softAP(ssid, password);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
+  // Initialize WebSocket
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->send(200, "text/html", index_html);
+
+  // Serve static HTML page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", index_html);
   });
+
   server.begin();
 
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
 
   Serial.println("Servers initialized smoothly.");
-
-
 
   ArduinoOTA
     .onStart([]() {
@@ -578,6 +602,16 @@ void loop() {
     return;  // skip all your other code while updating
   }
 
+  unsigned long now = millis();
+  if (now - lastUpdate > 100) {
+    lastUpdate = now;
+
+    // Use your existing, comprehensive JSON serializer
+    String jsonString = getSerializedData();
+
+    // Send to all connected clients instantly over WebSockets
+    ws.textAll(jsonString);
+  }
 
   crsf.update();
   static uint32_t next = micros();
@@ -590,6 +624,8 @@ void loop() {
     esc1.sendThrottle(0.08f);       // 8 %
     esc2.sendThrottle(0.08f);       // 8 %
   }
+
+  // server.handleClient();
 
   // Announce ourselves to the CRSF router once per second
   if (millis() - lastHeartbeatMs > 1000) {
@@ -606,44 +642,38 @@ void loop() {
     crsfBatt.capacity = htobe24((uint32_t)(esc1.temperatureC()));   //mAh (24 bit field, max 16777215mAh)
     crsfBatt.remaining = (uint8_t)(esc2.temperatureC());            //percent
     crsf.queuePacket(CRSF_SYNC_BYTE, CRSF_FRAMETYPE_BATTERY_SENSOR, &crsfBatt, sizeof(crsfBatt));
-
-    // Native Station AP RSSI Logic
-    wifi_sta_list_t wifi_sta_list;
-    esp_wifi_ap_get_sta_list(&wifi_sta_list);
-
-    if (wifi_sta_list.num > 0) {
-      rssi = wifi_sta_list.sta[0].rssi;  // Note: added missing array index '[0]' to target first device
-    } else {
-      rssi = -127;
-    }
-
-    // Scale the signal
-    rssiPercentage = getSignalQuality(rssi);
-
-    // Core Variable Simulations
-    liveCounter++;
-    temperature += random(-10, 11) / 100.0;
-    humidity = RP;
-    batteryVoltage = esc1.voltage();
-
-    if (liveCounter % 50 == 0) {
-      statusString = (statusString == "Optimal") ? "Warning" : "Optimal";
-    }
-
-    String currentData = getSerializedData();
-
-    ws.cleanupClients();
-    if (ws.count() > 0 && ws.availableForWriteAll()) {
-      ws.textAll(currentData);
-    }
-
-    if (millis() - lastPrintMs > 100) {
-      lastPrintMs = millis();
-      printEverything();
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1));
   }
+  // Native Station AP RSSI Logic
+  wifi_sta_list_t wifi_sta_list;
+  esp_wifi_ap_get_sta_list(&wifi_sta_list);
+
+  if (wifi_sta_list.num > 0) {
+    rssi = wifi_sta_list.sta[0].rssi;  // Note: added missing array index '[0]' to target first device
+  } else {
+    rssi = -127;
+  }
+
+  // Scale the signal
+  rssiPercentage = getSignalQuality(rssi);
+
+  // Core Variable Simulations
+  liveCounter++;
+  temperature += random(-10, 11) / 100.0;
+  humidity = RP;
+  batteryVoltage = esc1.voltage();
+
+  if (liveCounter % 50 == 0) {
+    statusString = (statusString == "Optimal") ? "Warning" : "Optimal";
+  }
+
+  String currentData = getSerializedData();
+
+  if (millis() - lastPrintMs > 100) {
+    lastPrintMs = millis();
+    printEverything();
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(1));
 }
 
 void printEverything() {
