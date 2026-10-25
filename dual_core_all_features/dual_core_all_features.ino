@@ -12,10 +12,10 @@
 #include <ArduinoOTA.h>
 #include <WiFi.h>
 #include <WiFiAP.h>
-#include <WebServer.h>
 #include <ArduinoJson.h>
 #include "esp_wifi.h"
 #include "driver/spi_master.h"
+#include <ESPAsyncWebServer.h>
 
 spi_device_handle_t ledDev;
 
@@ -35,7 +35,8 @@ const char *password = "Whale#1234";
 uint32_t last_ota_time = 0;
 
 // 2. Initialize Servers
-WebServer server(80);
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 
 // 3. Variables to Monitor Live
 int liveCounter = 0;
@@ -113,27 +114,30 @@ const char index_html[] PROGMEM = R"rawliteral(
             <div class="row-item"><div class="label">System Status</div><div class="value" id="v-status">-</div></div>
         </div>
     <script>
-       const $ = id => document.getElementById(id);
-
-async function poll() {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 1500);
-  try {
-    const r = await fetch('/data', { signal: ctrl.signal, cache: 'no-store' });
-    const d = await r.json();
-    $('v-counter').innerText = d.counter;
-    $('v-temp').innerText = d.temp.toFixed(1) + ' °C';
-    $('v-hum').innerText = d.hum.toFixed(1) + ' %';
-    $('v-rssi').innerText = (d.rssi_raw === -127) ? 'Disconnected' : d.rssi_pct + '%';
-    $('v-bat').innerText = d.bat.toFixed(2) + ' V';
-    $('v-status').innerText = d.status;
-    $('v-status').style.color = (d.status === 'Optimal') ? '#30d158' : '#ff9f0a'; 
-  } finally {
-    clearTimeout(timer);
-    setTimeout(poll, 200);
-  }
+      let socket;
+const $ = id => document.getElementById(id);
+function connect() {
+  socket = new WebSocket('ws://' + location.host + '/ws');
+  socket.onopen = () => { $('ws-status').innerText = 'CONNECTED TO WHALE'; $('ws-status').style.color = '#30d158'; };
+  socket.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      $('v-counter').innerText = d.counter;
+      $('v-temp').innerText = d.temp.toFixed(1) + ' °C';
+      $('v-hum').innerText = d.hum.toFixed(1) + ' %';
+      $('v-rssi').innerText = (d.rssi_raw === -127) ? 'Disconnected' : d.rssi_pct + '%';
+      $('v-bat').innerText = d.bat.toFixed(2) + ' V';
+      $('v-status').innerText = d.status;
+      $('v-status').style.color = (d.status === 'Optimal') ? '#30d158' : '#ff9f0a';
+    } catch (err) { console.error(err); }
+  };
+  socket.onclose = () => {
+    $('ws-status').innerText = 'DISCONNECTED - retrying...';
+    $('ws-status').style.color = '#ff453a';
+    setTimeout(connect, 1000);
+  };
 }
-poll();
+connect();
     </script>
 </body>
 </html>
@@ -152,10 +156,6 @@ String getSerializedData() {
   String output;
   serializeJson(doc, output);
   return output;
-}
-
-void handleRoot() {
-  server.send(200, "text/html", index_html);
 }
 
 const int PIN_ESC1 = 1;
@@ -272,6 +272,13 @@ void ledTask(void *pvParameters) {
   }
 }
 
+void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType type,
+               void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    client->text(getSerializedData());  // send current values immediately
+  }
+}
+
 HardwareSerial crsfSerial(1);
 AlfredoCRSF crsf;
 
@@ -369,11 +376,6 @@ void imuTask(void *arg) {
       Y = (y > 1400) ? 1400 : y;
     }
   }
-}
-
-void handleData() {
-  server.sendHeader("Cache-Control", "no-store");
-  server.send(200, "application/json", getSerializedData());
 }
 
 void setup() {
@@ -478,10 +480,6 @@ void setup() {
     coreA = s.average;
   });
 
-
-
-
-
   Serial.println("\nConfiguring Access Point...");
 
   WiFi.mode(WIFI_AP);
@@ -492,15 +490,15 @@ void setup() {
   WiFi.softAP(ssid, password);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-  server.on("/", handleRoot);
-  server.on("/data", handleData);
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->send(200, "text/html", index_html);
+  });
   server.begin();
 
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
-
-  server.on("/", handleRoot);
-  server.begin();
 
   Serial.println("Servers initialized smoothly.");
 
@@ -580,6 +578,7 @@ void loop() {
     return;  // skip all your other code while updating
   }
 
+
   crsf.update();
   static uint32_t next = micros();
   static uint32_t lastPrint = 0;
@@ -591,8 +590,6 @@ void loop() {
     esc1.sendThrottle(0.08f);       // 8 %
     esc2.sendThrottle(0.08f);       // 8 %
   }
-
-  server.handleClient();
 
   // Announce ourselves to the CRSF router once per second
   if (millis() - lastHeartbeatMs > 1000) {
@@ -634,6 +631,11 @@ void loop() {
     }
 
     String currentData = getSerializedData();
+
+    ws.cleanupClients();
+    if (ws.count() > 0 && ws.availableForWriteAll()) {
+      ws.textAll(currentData);
+    }
 
     if (millis() - lastPrintMs > 100) {
       lastPrintMs = millis();
