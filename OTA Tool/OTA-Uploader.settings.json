@@ -1,0 +1,10 @@
+{
+    "EspotaPath":  "C:\\Users\\cardb\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.12\\tools\\espota.exe",
+    "Ip":  "192.168.10.1",
+    "Port":  "3232",
+    "Password":  "",
+    "Ssid":  "Whale",
+    "AutoReconnect":  "True",
+    "RestartAdapter":  "True",
+    "BinPath":  "C:\\Users\\cardb\\OneDrive\\Documents\\Code\\BlueWhale\\dual_core_all_features\\build\\esp32.esp32.esp32s3\\dual_core_all_features.ino.bin"
+}

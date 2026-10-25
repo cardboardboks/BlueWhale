@@ -18,6 +18,7 @@
 #include "esp_wifi.h"
 
 SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
+//ArduinoOTA.setRebootOnSuccess(true);
 
 #define configTICK_RATE_HZ 2000
 
@@ -267,9 +268,11 @@ void ledTask(void *pvParameters) {
         }
       }
       hue++;
+      hue++;
+      hue++;
       showLeds();
     }
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1));
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(10));
   }
 }
 
@@ -430,7 +433,7 @@ void setup() {
       "imu_0",         // name
       4096,            // stack size (bytes)
       nullptr,         // parameter
-      2,              // priority
+      2,               // priority
       &imuTaskHandle,  // task handle (not needed)
       0                // core 0
     );
@@ -440,7 +443,7 @@ void setup() {
       "ledTask",  // name
       4096,       // stack size (bytes)
       NULL,       // parameter
-      1,         // priority
+      1,          // priority
       NULL,       // task handle (not needed)
       0           // core 0
     );
@@ -496,6 +499,7 @@ void setup() {
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
+  webSocket.enableHeartbeat(3000, 2000, 2);  // ping every 3s, 2s to answer, drop after 2 misses
   Serial.println("Servers initialized smoothly.");
 
 
@@ -516,6 +520,7 @@ void setup() {
     .onEnd([]() {
       otaInProgress = false;
       Serial.println("\nEnd");
+      // ESP.restart();
     })
     .onProgress([](unsigned int progress, unsigned int total) {
       if (millis() - last_ota_time > 500) {
@@ -567,6 +572,8 @@ void setup() {
 
 void loop() {
 
+  ArduinoOTA.handle();
+
   if (otaInProgress) {
     return;  // skip all your other code while updating
   }
@@ -586,10 +593,8 @@ void loop() {
   server.handleClient();
   webSocket.loop();
 
-  ArduinoOTA.handle();
-
   // Announce ourselves to the CRSF router once per second
-  if (millis() - lastHeartbeatMs > 100) {
+  if (millis() - lastHeartbeatMs > 1000) {
     lastHeartbeatMs = millis();
     crsf.sendHeartbeat();
 
@@ -628,7 +633,10 @@ void loop() {
     }
 
     String currentData = getSerializedData();
-    webSocket.broadcastTXT(currentData);
+    // broadcast only runs when there are clients
+    if (webSocket.connectedClients() > 0) {
+      webSocket.broadcastTXT(currentData);
+    }
   }
 
   if (millis() - lastPrintMs > 100) {
