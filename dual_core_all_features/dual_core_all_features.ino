@@ -121,11 +121,11 @@ void saveTune() {
 volatile int outChannel[NUM_OUT] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
 
 #define NUM_ESC 4
-float throttleCmd[NUM_ESC] = { 0.08f, 0.08f, 0.08f, 0.08f };  // 0.0 - 1.0, what you send to each ESC
+float throttleCmd[NUM_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what you send to each ESC
 
 // An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
 // so one plugged in after boot can start reporting. Set to 0 to turn this off.
-#define ESC_REDETECT_MS 3000
+#define ESC_REDETECT_MS 0
 
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
@@ -242,8 +242,8 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
 .ch b, .ch span { position: relative; font-weight: 500; }
 .ch b { color: var(--muted); }
 
-.dots { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px 4px; justify-items: center; padding-top: 2px; min-width: 0; }
-.dc { display: flex; align-items: center; gap: 3px; }
+.dots { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 3px 4px; justify-items: center; padding-top: 2px; min-width: 0; }
+.dc { display: flex; align-items: center; gap: 3px; min-width: 0; }
 .dc span { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .dot { flex: none; width: 0.8rem; height: 0.8rem; border-radius: 50%; background: rgba(255,255,255,.12); }
 .dot.on { background: var(--good); box-shadow: 0 0 6px var(--good); }
@@ -261,7 +261,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
     grid-template-columns: 1fr 1.6fr 1.3fr 1fr;
     grid-template-areas: "status esc rx imu" "cpu esc rx rec" "arr esc out bulk";
   }
-  .dots { grid-template-columns: repeat(5, 1fr); gap: 3px 2px; }
+  .dots { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px 2px; }
   .dot { width: .7rem; height: .7rem; }
   .dc { gap: 2px; }
   .bulk { max-height: 4.5em; }
@@ -282,7 +282,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
     grid-template-areas: "status cpu arr arr" "esc esc rx rx" "esc esc out out" "imu imu rec bulk";
   }
   .card { padding: 10px 14px 12px; border-radius: 14px; }
-  .dots { grid-template-columns: repeat(20, 1fr); gap: 6px; padding-top: 6px; }
+  .dots { grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 8px 6px; padding-top: 6px; }   /* 2 rows of 10: always fits, whatever the window width */
   .dot { width: 1.1rem; height: 1.1rem; }
   .ch { padding: 4px 8px; }
   .bulk { max-height: 12em; }
@@ -309,6 +309,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <div class="kv"><span>Core 0</span><span class="v" id="v-c0">--</span></div>
       <div class="kv"><span>Core 1</span><span class="v" id="v-c1">--</span></div>
       <div class="kv"><span>Average</span><span class="v" id="v-ca">--</span></div>
+      <div class="kv"><span>WiFi</span><span class="v" id="v-wifi">--</span></div>
     </div>
 
     <div class="card" id="c-esc"><h2>ESCs</h2>
@@ -470,6 +471,17 @@ function onMessage(event) {
   $('v-bulk').textContent = d.bulk || "";
 
   if (d.cpu) { set('v-c0', f(d.cpu[0],1)+" %"); set('v-c1', f(d.cpu[1],1)+" %"); set('v-ca', f(d.cpu[2],1)+" %"); }
+
+  if (d.wifi !== undefined) {
+    const wf = $('v-wifi');
+    if (d.wifi <= -127) { wf.textContent = "--"; wf.className = "v"; }
+    else {
+      // -100 dBm (or worse) = 0 %, -50 dBm (or better) = 100 %  (same scale as getSignalQuality() in the sketch)
+      const pct = Math.max(0, Math.min(100, Math.round((d.wifi + 100) * 2)));
+      wf.textContent = pct + " %";
+      wf.className = "v " + (pct >= 80 ? "good" : pct >= 50 ? "warn" : "bad");   // strong / ok / weak
+    }
+  }
 
   if (d.esc) {
     d.esc.forEach((e, i) => {
@@ -858,6 +870,17 @@ void addEsc(JsonArray arr, int i, bool ok) {
   o["link"] = (float)escs[i].lossPercent();  // adjust if you want a different "link" metric
 }
 
+// WiFi signal strength (dBm) of the strongest phone/laptop connected to our access point; -127 = nobody connected
+int wifiRssi() {
+  wifi_sta_list_t list;
+  int best = -127;
+  if (esp_wifi_ap_get_sta_list(&list) == ESP_OK) {
+    for (int i = 0; i < list.num; i++)
+      if (list.sta[i].rssi > best) best = list.sta[i].rssi;
+  }
+  return best;
+}
+
 String getSerializedData() {
   JsonDocument doc;
 
@@ -902,6 +925,8 @@ String getSerializedData() {
   rx["dbm"] = dbm;
   JsonArray ch = rx["ch"].to<JsonArray>();
   for (int i = 1; i <= 8; i++) ch.add(crsf.getChannel(i));
+
+  doc["wifi"] = wifiRssi();
 
   // Tuning values
   JsonArray tune = doc["tune"].to<JsonArray>();
@@ -993,6 +1018,11 @@ float peakHold(float raw, float peak) {
 }
 
 void setup() {
+  // Serial first, so nothing printed during setup is lost. On boards using the native USB port
+  // this waits (up to 1.5 s) for the serial monitor to attach; on a UART-bridge port it returns at once.
+  Serial.begin(115200);
+  for (unsigned long t = millis(); !Serial && millis() - t < 1500;) delay(10);
+  Serial.println("\n=== Whale boot ===");
 
   bootState = "GPIO init";
 
@@ -1123,7 +1153,7 @@ void setup() {
   for (unsigned long start = millis(); millis() - start < 2000;) {
   }
 
-  Serial.begin(115200);
+
   for (int i = 0; i < NUM_ESC; i++) escs[i].begin(ESC_PINS[i], DSHOT600, true, MOTOR_POLES);
 
   bootState = "Waiting for ESC boot";
@@ -1177,10 +1207,27 @@ void loop() {
   }
 
 
+  // ---- diagnostics: longest gap between loop() passes, plus memory, printed once a second ----
+  static uint32_t lastLoopUs = micros();
+  static uint32_t maxGapUs = 0;
+  uint32_t nowUs = micros();
+  if (nowUs - lastLoopUs > maxGapUs) maxGapUs = nowUs - lastLoopUs;
+  lastLoopUs = nowUs;
+
+  static uint32_t lastDiagMs = 0;
+  if (millis() - lastDiagMs >= 1000) {
+    lastDiagMs = millis();
+    ws.cleanupClients();  // drops dead/stalled web clients so their queued messages don't pile up in RAM
+    Serial.printf("diag: heap=%u min=%u maxLoopGap=%lums wsClients=%u link=%s\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
+                  (unsigned long)(maxGapUs / 1000), (unsigned)ws.count(), crsf.isLinkUp() ? "UP" : "DOWN");
+    maxGapUs = 0;
+  }
+
   unsigned long now = millis();
-  if (now - lastUpdate > 100) {
+  if (now - lastUpdate > 50) {
     lastUpdate = now;
-    ws.textAll(getSerializedData());
+    if (ws.count() > 0) ws.textAll(getSerializedData());  // nobody watching -> don't build the JSON at all
   }
 
 

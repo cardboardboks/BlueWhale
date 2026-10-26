@@ -6,5 +6,5 @@
     "Ssid":  "Whale",
     "AutoReconnect":  "True",
     "RestartAdapter":  "False",
-    "BinPath":  "C:\\Users\\cardb\\Downloads\\whale_dashboard\\build\\esp32.esp32.esp32s3\\whale_dashboard.ino.bin"
+    "BinPath":  "C:\\Users\\cardb\\OneDrive\\Documents\\Code\\BlueWhale\\dual_core_all_features\\build\\esp32.esp32.esp32s3\\dual_core_all_features.ino.bin"
 }
