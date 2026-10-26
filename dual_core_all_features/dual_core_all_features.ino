@@ -121,11 +121,11 @@ void saveTune() {
 volatile int outChannel[NUM_OUT] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
 
 #define NUM_ESC 4
-float throttleCmd[NUM_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what you send to each ESC
+float throttleCmd[NUM_ESC] = { 0.08f, 0.08f, 0.08f, 0.08f };  // 0.0 - 1.0, what you send to each ESC
 
 // An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
 // so one plugged in after boot can start reporting. Set to 0 to turn this off.
-#define ESC_REDETECT_MS 0
+#define ESC_REDETECT_MS 3000
 
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
@@ -191,6 +191,7 @@ td { text-align: right; line-height: 1.3; padding: 0; }
 th:first-child, td.l { text-align: left; color: var(--text); }
 tr + tr td { border-top: 1px solid var(--border); }
 th.off { opacity: .3; }
+.stale { color: #636366 !important; font-weight: 400 !important; }   /* last known value, no longer updating */
 #c-esc table.num th:first-child, #c-esc table.num td.l { width: 25%; }
 #c-esc th:last-child, #c-esc td:last-child { border-left: 1px solid var(--border); }
 #c-esc td:last-child { color: #fff; font-weight: 600; }
@@ -383,6 +384,10 @@ const f = (v, d) => (v === undefined || v === null) ? "--" : Number(v).toFixed(d
 // battery: 6S pack. Per-cell limits: below WARN = amber, below LOW = red
 const CELLS = 6, CELL_WARN = 3.7, CELL_LOW = 3.5;   // 22.2 V / 21.0 V on 6S
 
+// last good ESC readings, so they can be shown greyed out when an ESC stops reporting
+const lastEsc = {}, lastAvgRow = {};
+let lastAvgV = "", lastAvgA = "";
+
 const ESC_ROWS = [["Thr %","thr",0],["Volts","v",1],["Amps","a",1],["Temp °C","t",0],["RPM","rpm",0],["Spd km/h","spd",1],["Link %","link",0]];
 $('esc-body').innerHTML = ESC_ROWS.map(([l,k]) =>
   `<tr><td class="l">${l}</td>` + [1,2,3,4,5].map(n => `<td id="e${n}-${k}"></td>`).join("") + `</tr>`).join("");
@@ -486,13 +491,23 @@ function onMessage(event) {
   if (d.esc) {
     d.esc.forEach((e, i) => {
       const n = i + 1;
+      if (e.ok) lastEsc[n] = e;                 // remember the last good reading
+      const shown = e.ok ? e : lastEsc[n];      // not reporting -> keep showing the last one, greyed out
       $('eh' + n).classList.toggle('off', !e.ok);
-      ESC_ROWS.forEach(([l, k, dec]) => set(`e${n}-${k}`, e.ok ? f(e[k], dec) : ""));  // absent ESC = blank
+      ESC_ROWS.forEach(([l, k, dec]) => {
+        const c = $(`e${n}-${k}`);
+        c.textContent = shown ? f(shown[k], dec) : "";   // an ESC that never reported stays blank
+        c.classList.toggle('stale', !e.ok && !!shown);
+      });
     });
-    // Avg column: only ESCs that are reporting
+    // Avg column: only ESCs that are reporting right now; if none are, show the last average greyed out
     const live = d.esc.filter(e => e.ok);
-    ESC_ROWS.forEach(([l, k, dec]) =>
-      set(`e5-${k}`, live.length ? f(live.reduce((s, e) => s + e[k], 0) / live.length, dec) : ""));
+    ESC_ROWS.forEach(([l, k, dec]) => {
+      const c = $(`e5-${k}`);
+      if (live.length) lastAvgRow[k] = f(live.reduce((s, e) => s + e[k], 0) / live.length, dec);
+      c.textContent = lastAvgRow[k] || "";
+      c.classList.toggle('stale', !live.length && !!lastAvgRow[k]);
+    });
   }
 
   if (d.rec) {
@@ -509,6 +524,12 @@ function onMessage(event) {
     av.textContent = f(d.avg.v, 1) + " V";
     av.className = "v " + (perCell < CELL_LOW ? "bad" : perCell < CELL_WARN ? "warn" : "good");
     set('v-avga', f(d.avg.a, 1) + " A");
+    $('v-avga').className = "v";
+    lastAvgV = av.textContent; lastAvgA = $('v-avga').textContent;
+  } else if (lastAvgV) {
+    // no ESC reporting: keep the last averages, greyed out
+    av.textContent = lastAvgV; av.className = "v stale";
+    set('v-avga', lastAvgA); $('v-avga').className = "v stale";
   } else {
     av.textContent = "--"; av.className = "v";
     set('v-avga', "--");
@@ -773,7 +794,22 @@ VectorInt16 aa;  // accel (raw, includes gravity)
 float ypr[3];
 bool dmpReady = false;
 
+// Median of the last 3 samples: throws away a single bad reading without smoothing real movement much
+struct Med3 {
+  int16_t v[3] = { 0, 0, 0 };
+  int16_t add(int16_t x) {
+    v[0] = v[1];
+    v[1] = v[2];
+    v[2] = x;
+    int16_t a = v[0], b = v[1], c = v[2];
+    return max(min(a, b), min(max(a, b), c));
+  }
+};
+
+volatile uint32_t imuBadPackets = 0;  // corrupted IMU packets thrown away (printed in the diag line)
+
 void imuTask(void *arg) {
+  Med3 mGx, mGy, mGz, mAx, mAy, mAz;
   if (otaInProgress == false) {
     for (;;) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
@@ -781,6 +817,15 @@ void imuTask(void *arg) {
       if (!mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) continue;
 
       mpu.dmpGetQuaternion(&q, fifoBuffer);
+
+      // A good packet has a unit-length quaternion. A packet damaged by I2C noise (or a FIFO overflow)
+      // doesn't, so drop it instead of letting it spike the tilt, yaw, G and the page values.
+      float qn = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
+      if (qn < 0.9f || qn > 1.1f) {
+        imuBadPackets++;
+        continue;
+      }
+
       mpu.dmpGetGravity(&gravity, &q);
       mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
@@ -795,6 +840,14 @@ void imuTask(void *arg) {
 
       mpu.dmpGetGyro(&gy, fifoBuffer);
       mpu.dmpGetAccel(&aa, fifoBuffer);
+
+      // median-of-3 on every axis to remove single-sample spikes
+      gy.x = mGx.add(gy.x);
+      gy.y = mGy.add(gy.y);
+      gy.z = mGz.add(gy.z);
+      aa.x = mAx.add(aa.x);
+      aa.y = mAy.add(aa.y);
+      aa.z = mAz.add(aa.z);
 
       imuGx = gy.x;
       imuGy = gy.y;
@@ -1153,7 +1206,6 @@ void setup() {
   for (unsigned long start = millis(); millis() - start < 2000;) {
   }
 
-
   for (int i = 0; i < NUM_ESC; i++) escs[i].begin(ESC_PINS[i], DSHOT600, true, MOTOR_POLES);
 
   bootState = "Waiting for ESC boot";
@@ -1218,14 +1270,14 @@ void loop() {
   if (millis() - lastDiagMs >= 1000) {
     lastDiagMs = millis();
     ws.cleanupClients();  // drops dead/stalled web clients so their queued messages don't pile up in RAM
-    Serial.printf("diag: heap=%u min=%u maxLoopGap=%lums wsClients=%u link=%s\n",
+    Serial.printf("diag: heap=%u min=%u maxLoopGap=%lums wsClients=%u link=%s imuBad=%u\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
-                  (unsigned long)(maxGapUs / 1000), (unsigned)ws.count(), crsf.isLinkUp() ? "UP" : "DOWN");
+                  (unsigned long)(maxGapUs / 1000), (unsigned)ws.count(), crsf.isLinkUp() ? "UP" : "DOWN", (unsigned)imuBadPackets);
     maxGapUs = 0;
   }
 
   unsigned long now = millis();
-  if (now - lastUpdate > 50) {
+  if (now - lastUpdate > 100) {
     lastUpdate = now;
     if (ws.count() > 0) ws.textAll(getSerializedData());  // nobody watching -> don't build the JSON at all
   }
