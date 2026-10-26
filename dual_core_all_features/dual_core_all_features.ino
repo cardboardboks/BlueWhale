@@ -121,7 +121,7 @@ void saveTune() {
 volatile int outChannel[NUM_OUT] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
 
 #define NUM_ESC 4
-float throttleCmd[NUM_ESC] = { 0.08f, 0.08f, 0.08f, 0.08f };  // 0.0 - 1.0, what you send to each ESC
+float throttleCmd[NUM_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what you send to each ESC
 
 // An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
 // so one plugged in after boot can start reporting. Set to 0 to turn this off.
@@ -1257,14 +1257,6 @@ void loop() {
   if (otaInProgress) {
     return;
   }
-
-
-  // ---- diagnostics: longest gap between loop() passes, plus memory, printed once a second ----
-  static uint32_t lastLoopUs = micros();
-  static uint32_t maxGapUs = 0;
-  uint32_t nowUs = micros();
-  if (nowUs - lastLoopUs > maxGapUs) maxGapUs = nowUs - lastLoopUs;
-  lastLoopUs = nowUs;
 
   static uint32_t lastDiagMs = 0;
   if (millis() - lastDiagMs >= 1000) {
