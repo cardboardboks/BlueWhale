@@ -13,10 +13,10 @@
 #include <WiFi.h>
 #include <WiFiAP.h>
 #include <ArduinoJson.h>
-#include <Preferences.h>  // flash (NVS) storage for the tuning values
-#include <esp_system.h>   // esp_reset_reason()
-#include <esp_timer.h>    // esp_timer_get_time() for the uptime counter
-#include <esp_heap_caps.h> // heap_caps_get_largest_free_block() for the diagnostics line
+#include <Preferences.h>    // flash (NVS) storage for the tuning values
+#include <esp_system.h>     // esp_reset_reason()
+#include <esp_timer.h>      // esp_timer_get_time() for the uptime counter
+#include <esp_heap_caps.h>  // heap_caps_get_largest_free_block() for the diagnostics line
 #include "esp_wifi.h"
 #include "driver/spi_master.h"
 #include <ESPAsyncWebServer.h>
@@ -25,16 +25,16 @@
 // Memory-corruption hunter. 1 = after crsf.begin(), set a hardware watchpoint on the CRSF object's first
 // word. The moment ANY code writes to it, the board panics with a backtrace that shows the guilty function.
 // Leave at 0 for normal running.
-#define DEBUG_WATCH_CRSF 0
+#define DEBUG_WATCH_CRSF 1
 #if DEBUG_WATCH_CRSF
-  #include "esp_cpu.h"
-  #include "esp_ipc.h"
+#include "esp_cpu.h"
+#include "esp_ipc.h"
 #endif
 
 
 spi_device_handle_t ledDev;
 
-SET_TIME_BEFORE_STARTING_SKETCH_MS(2000);
+SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 
 IPAddress local_IP(192, 168, 10, 1);
 IPAddress gateway(192, 168, 10, 1);
@@ -74,11 +74,11 @@ volatile int16_t imuSpare2 = 0;
 
 // ---- Records (tracked here on the ESP so nothing is missed between page updates) ----
 #define DMP_ACCEL_LSB_PER_G 16384.0f  // accel counts per g (+/-2 g range). If Max G still reads ~0.5 or ~1 at rest, try 8192.0f
-volatile float recMaxG = 0;       // peak acceleration in g with gravity removed (about 0 when sitting still)
-volatile float recMaxA = 0;       // highest current seen on any single ESC
-volatile float recMaxTotalA = 0;  // highest COMBINED current of all reporting ESCs added together
-volatile float recMinV = 0;       // lowest voltage seen on any ESC (0 = nothing recorded yet)
-volatile float recMaxSpd = 0;     // highest AVERAGE speed (average of the ESCs reporting)
+volatile float recMaxG = 0;           // peak acceleration in g with gravity removed (about 0 when sitting still)
+volatile float recMaxA = 0;           // highest current seen on any single ESC
+volatile float recMaxTotalA = 0;      // highest COMBINED current of all reporting ESCs added together
+volatile float recMinV = 0;           // lowest voltage seen on any ESC (0 = nothing recorded yet)
+volatile float recMaxSpd = 0;         // highest AVERAGE speed (average of the ESCs reporting)
 
 void resetRecords() {
   recMaxG = 0;
@@ -135,8 +135,8 @@ void saveTune() {
 // 8 output channels shown on the page. Write 1000-2000 into these from anywhere, e.g. outChannel[0] = 1750;
 volatile int outChannel[NUM_OUT] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
 
-#define MAX_ESC 4  // how many ESC slots exist (arrays below always have this many entries)
-#define NUM_ESC 4  // how many ESCs are actually used: 1 to MAX_ESC. Change only this number.
+#define MAX_ESC 4                                             // how many ESC slots exist (arrays below always have this many entries)
+#define NUM_ESC 2                                             // how many ESCs are actually used: 1 to MAX_ESC. Change only this number.
 float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what you send to each ESC
 
 // An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
@@ -148,6 +148,7 @@ float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what
 
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
+#define WEB_UPDATE_MS 50  // milliseconds between web page updates (10 = 100 per second). Higher = less CPU, jerkier page
 
 // Scale dBm to 0-100 %
 int getSignalQuality(int dbm) {
@@ -183,6 +184,7 @@ body {
   padding: calc(env(safe-area-inset-top) + 6px) calc(env(safe-area-inset-right) + 8px)
            calc(env(safe-area-inset-bottom) + 6px) calc(env(safe-area-inset-left) + 8px);
   display: flex; flex-direction: column; align-items: center;
+  justify-content: center;   /* centre the whole page vertically as well as horizontally */
 }
 .wrap { width: 100%; max-width: 560px; }
 h1 { display: none; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.3px; margin: 0 0 6px 4px; }
@@ -836,7 +838,8 @@ struct Med3 {
 };
 
 volatile uint32_t dbgMaxLoopGapUs = 0;  // longest pause between loop() passes during the last second (diagnostics line)
-volatile uint32_t imuBadPackets = 0;  // corrupted IMU packets thrown away (printed in the diag line)
+char dbgLine[112] = "";                 // diagnostics text shown on the page; rebuilt once a second in loop()
+volatile uint32_t imuBadPackets = 0;    // corrupted IMU packets thrown away (printed in the diag line)
 
 void imuTask(void *arg) {
   Med3 mGx, mGy, mGz, mAx, mAy, mAz;
@@ -1018,14 +1021,7 @@ String getSerializedData() {
   for (int i = 1; i <= 8; i++) ch.add(crsf.getChannel(i));
 
   doc["wifi"] = wifiRssi();
-  // diagnostics line shown under the bulk text: free heap, lowest it has been, largest single free block,
-  // longest loop gap in the last second, and connected web clients
-  char dbg[96];
-  snprintf(dbg, sizeof(dbg), "heap %uk  min %uk  blk %uk | gap %ums | ws %u",
-           (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
-           (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024),
-           (unsigned)(dbgMaxLoopGapUs / 1000), (unsigned)ws.count());
-  doc["dbg"] = dbg;
+  doc["dbg"] = dbgLine;                                       // built once a second in loop() (walking the heap every update would be wasteful)
   doc["up"] = (uint32_t)(esp_timer_get_time() / 1000000ULL);  // seconds since boot
 
   // Tuning values
@@ -1351,6 +1347,8 @@ void loop() {
   // longest gap between loop() passes, reported once a second on the page's diagnostics line
   static uint32_t lastLoopUs = micros();
   static uint32_t maxGapUs = 0;
+  static uint32_t jsonMaxUs = 0;  // longest time spent building + sending a web update this second
+  static uint32_t escMaxUs = 0;   // longest time spent in the ESC send block this second
   uint32_t nowUs = micros();
   if (nowUs - lastLoopUs > maxGapUs) maxGapUs = nowUs - lastLoopUs;
   lastLoopUs = nowUs;
@@ -1361,13 +1359,24 @@ void loop() {
     lastCleanupMs = millis();
     ws.cleanupClients();
     dbgMaxLoopGapUs = maxGapUs;
+    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk | gap %.1fms json %.1fms esc %.1fms | ws %u",
+             (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024),
+             maxGapUs / 1000.0f, jsonMaxUs / 1000.0f, escMaxUs / 1000.0f, (unsigned)ws.count());
     maxGapUs = 0;
+    jsonMaxUs = 0;
+    escMaxUs = 0;
   }
 
   unsigned long now = millis();
-  if (now - lastUpdate > 100) {
+  if (now - lastUpdate >= WEB_UPDATE_MS) {
     lastUpdate = now;
-    if (ws.count() > 0) ws.textAll(getSerializedData());  // nobody watching -> don't build the JSON at all
+    if (ws.count() > 0) {  // nobody watching -> don't build the JSON at all
+      uint32_t t0 = micros();
+      ws.textAll(getSerializedData());
+      uint32_t d = micros() - t0;
+      if (d > jsonMaxUs) jsonMaxUs = d;
+    }
   }
 
 
@@ -1396,7 +1405,10 @@ void loop() {
 
   if (currentMicros - previousMicros >= INTERVAL_US) {
     previousMicros += INTERVAL_US;
+    uint32_t t0 = micros();
     for (int i = 0; i < NUM_ESC; i++) escs[i].sendThrottle(throttleCmd[i]);
+    uint32_t d = micros() - t0;
+    if (d > escMaxUs) escMaxUs = d;
   }
 
   updateRecords();  // max/min records, checked on every pass so short peaks aren't missed
