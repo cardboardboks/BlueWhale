@@ -21,8 +21,9 @@ void mixer(float throttle, float steering) {
 
   // force only normal operation when imu is disabled
   // when auto up is off: all blinking purple/white (stabilisation not available)
-  if (ch[4] == 2000 && ch[3] == 2000) {
+  if (txchannel[4] == 2000 && txchannel[3] == 2000) {
     led(7, 1);
+    modeString = "No IMU";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -32,8 +33,9 @@ void mixer(float throttle, float steering) {
 
 
   // 8 stabilisation off, drive forward, top: slow blink green
-  if (ch[6] == 1000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+  if (txchannel[6] == 1000 && RP <= (70 - roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(8, 1);
+    modeString = "Man Up Fwd";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -41,8 +43,9 @@ void mixer(float throttle, float steering) {
   }
 
   // 9 stabilisation off, drive backwards, top: blinking green
-  if (ch[6] == 2000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+  if (txchannel[6] == 2000 && RP <= (70 - roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(9, 1);
+    modeString = "Man Up Rev";
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
   } else {
@@ -50,8 +53,9 @@ void mixer(float throttle, float steering) {
   }
 
   // 10 stabilisation off, drive forward, bottom: slow blink green
-  if (ch[6] == 1000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+  if (txchannel[6] == 1000 && RP >= (70 + roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(10, 1);
+    modeString = "Man Dwn Fwd";
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -59,8 +63,9 @@ void mixer(float throttle, float steering) {
   }
 
   // 11 stabilisation off, drive backwards, bottom: blinking green
-  if (ch[6] == 2000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1500) {
+  if (txchannel[6] == 2000 && RP >= (70 + roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(11, 1);
+    modeString = "Man Dwn Rev";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
   } else {
@@ -70,8 +75,9 @@ void mixer(float throttle, float steering) {
 
 
   // 12 stabilisation on, drive forward, top: slow blink white
-  if (ch[6] == 1000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+  if (txchannel[6] == 1000 && RP <= (70 - roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(12, 1);
+    modeString = "Stab Up Fwd";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -79,8 +85,9 @@ void mixer(float throttle, float steering) {
   }
 
   // 13 stabilisation on, drive backwards, top: blinking white
-  if (ch[6] == 2000 && RP <= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+  if (txchannel[6] == 2000 && RP <= (70 - roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(13, 1);
+    modeString = "Stab Up Rev";
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
   } else {
@@ -88,8 +95,9 @@ void mixer(float throttle, float steering) {
   }
 
   // 14 stabilisation on, drive forward, bottom: slow blink white
-  if (ch[6] == 1000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+  if (txchannel[6] == 1000 && RP >= (70 + roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(14, 1);
+    modeString = "Stab Dwn Fwd";
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -97,8 +105,9 @@ void mixer(float throttle, float steering) {
   }
 
   // 15 stabilisation on, drive backwards, bottom: blinking white
-  if (ch[6] == 2000 && RP >= roll_flip && ch[3] == 2000 && ch[4] == 1000) {
+  if (txchannel[6] == 2000 && RP >= (70 + roll_flip) && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(15, 1);
+    modeString = "Stab Dwn Rev";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
   } else {

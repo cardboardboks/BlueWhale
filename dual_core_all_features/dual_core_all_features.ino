@@ -76,9 +76,14 @@ static uint32_t escMaxUs = 0;   // longest time spent in the ESC send block this
 volatile int16_t imuSpare1 = 0;  // two spare IMU fields
 volatile int16_t imuSpare2 = 0;
 
+// Arrows shown in the IMU box - you drive these from your own code
+volatile int8_t imuOrient = 0;     // up/down arrow:    1 = up (arrow up),    -1 = down (arrow down),  0 = blank
+volatile int8_t imuDirection = 0;  // left/right arrow: 1 = right (arrow right), -1 = left (arrow left), 0 = blank
+
 // ---- Records (tracked here on the ESP so nothing is missed between page updates) ----
 #define DMP_ACCEL_LSB_PER_G 16384.0f  // accel counts per g (+/-2 g range). If Max G still reads ~0.5 or ~1 at rest, try 8192.0f
 volatile float recMaxG = 0;           // peak acceleration in g with gravity removed (about 0 when sitting still)
+volatile float recMaxTemp = 0;        // highest temperature seen on any ESC (deg C)
 volatile float recMaxA = 0;           // highest current seen on any single ESC
 volatile float recMaxTotalA = 0;      // highest COMBINED current of all reporting ESCs added together
 volatile float recMinV = 0;           // lowest voltage seen on any ESC (0 = nothing recorded yet)
@@ -86,6 +91,7 @@ volatile float recMaxSpd = 0;         // highest AVERAGE speed (average of the E
 
 void resetRecords() {
   recMaxG = 0;
+  recMaxTemp = 0;
   recMaxA = 0;
   recMaxTotalA = 0;
   recMinV = 0;
@@ -103,6 +109,13 @@ const char *tuneName[NUM_TUNE] = {
   "Tune Var 16", "Tune Var 17", "Tune Var 18", "Tune Var 19", "Tune Var 20"
 };
 volatile float tuneVal[NUM_TUNE] = { 0 };
+
+// The FIRST NUM_TUNE_STR tuning variables hold text instead of a number. Read them anywhere as plain C strings,
+// e.g. tuneStr[0] (up to 31 characters). They are saved to flash and in the .param file like the numbers.
+// (tuneVal[0..4] are unused. Fixed char arrays, not String, because the web server task writes them while loop() reads them.)
+#define NUM_TUNE_STR 5
+#define TUNE_STR_LEN 32
+char tuneStr[NUM_TUNE_STR][TUNE_STR_LEN] = { "", "", "", "", "" };
 
 // ---- flash storage for the tuning values ----
 // Edits are saved TUNE_SAVE_DELAY_MS after the last change, so typing several values
@@ -124,6 +137,12 @@ void loadTune() {
     prefs.getBytes("tune", tmp, sizeof(tmp));
     for (int i = 0; i < NUM_TUNE; i++) tuneVal[i] = tmp[i];
   }
+  for (int i = 0; i < NUM_TUNE_STR; i++) {
+    char key[8], txt[TUNE_STR_LEN] = "";
+    snprintf(key, sizeof(key), "ts%d", i);
+    prefs.getString(key, txt, sizeof(txt));  // stays empty if nothing was saved yet
+    strlcpy(tuneStr[i], txt, TUNE_STR_LEN);
+  }
   prefs.end();
 }
 
@@ -132,6 +151,12 @@ void saveTune() {
   for (int i = 0; i < NUM_TUNE; i++) tmp[i] = tuneVal[i];
   prefs.begin("whale", false);  // read/write
   prefs.putBytes("tune", tmp, sizeof(tmp));
+  for (int i = 0; i < NUM_TUNE_STR; i++) {
+    char key[8], txt[TUNE_STR_LEN];
+    snprintf(key, sizeof(key), "ts%d", i);
+    strlcpy(txt, tuneStr[i], TUNE_STR_LEN);
+    prefs.putString(key, txt);
+  }
   prefs.end();
 }
 
@@ -140,7 +165,11 @@ void saveTune() {
 volatile int outChannel[NUM_OUT] = { 1500 };
 
 // rx intput channels - read 1000-2000
-int ch[10] = { 1500 };
+int txchannel[10] = { 1500 };
+
+// Arm switch = receiver channel 3. While it is HIGH, the web page can't reboot the board or change tuning values.
+#define ARM_CHANNEL 3
+#define ARM_HIGH_US 1500  // above this counts as high
 
 #define MAX_ESC 4                                             // how many ESC slots exist (arrays below always have this many entries)
 #define NUM_ESC 2                                             // how many ESCs are actually used: 1 to MAX_ESC. Change only this number.
@@ -148,7 +177,7 @@ float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what
 
 // An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
 // so one plugged in after boot can start reporting. Set to 0 to turn this off.
-#define ESC_REDETECT_MS 3000
+// #define ESC_REDETECT_MS 10
 
 // An ESC with no valid telemetry for this long (microseconds) is shown as not reporting
 #define ESC_STALE_US 1000000
@@ -223,6 +252,8 @@ th.off { opacity: .3; }
 #c-esc table.num th:first-child, #c-esc table.num td.l { width: 25%; }
 #c-esc th:last-child, #c-esc td:last-child { border-left: 1px solid var(--border); }
 #c-esc td:last-child { color: #fff; font-weight: 600; }
+#c-esc th:last-child { width: 20%; }   /* Avg column a little wider so the units fit */
+#c-esc td:last-child small { font-size: .7em; font-weight: 400; color: var(--muted); margin-left: 1px; }
 #c-esc th:nth-last-child(2), #c-esc td:nth-last-child(2) { padding-right: .5rem; }   /* gap between ESC 4 and the divider */
 #c-esc th:last-child, #c-esc td:last-child { padding-left: .2rem; }
 
@@ -242,6 +273,8 @@ th.off { opacity: .3; }
 .tv input { width: 5.5em; min-width: 0; font: inherit; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; text-align: right;
             color: #fff; background: rgba(255,255,255,.08); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
 .tv input:focus { outline: none; border-color: var(--accent); }
+.tv.str label { flex: none; max-width: 45%; }
+.tv.str input { flex: 1; width: auto; text-align: left; }   /* text variables: use the whole box, left aligned */
 /* hide the up/down spinner arrows on number boxes (desktop browsers) */
 .tv input::-webkit-outer-spin-button, .tv input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .tv input[type=number] { -moz-appearance: textfield; appearance: textfield; }
@@ -250,6 +283,12 @@ th.off { opacity: .3; }
          border: 1px solid rgba(255,69,58,.5); background: rgba(255,69,58,.15); color: var(--bad); }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 10; }
 .modal.show { display: flex; }
+button:disabled { opacity: .35; pointer-events: none; }
+.tv input:disabled { opacity: .45; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 14px); transform: translateX(-50%); z-index: 20;
+         background: #1c1c1e; border: 1px solid var(--border); border-radius: 10px; padding: 6px 14px; font-size: 1rem;
+         opacity: 0; pointer-events: none; transition: opacity .2s; white-space: nowrap; }
+.toast.show { opacity: 1; }
 .mbox { background: #1c1c1e; border: 1px solid var(--border); border-radius: 14px; padding: 16px; width: min(300px, 85vw); text-align: center; }
 .mbox p { font-size: 1.2rem; margin-bottom: 4px; } .mbox small { display: block; color: var(--muted); margin-bottom: 12px; }
 .mbtns { display: flex; gap: 8px; }
@@ -366,20 +405,22 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
         <tbody>
           <tr><td class="l">Gyro</td><td id="i-gx">--</td><td id="i-gy">--</td><td id="i-gz">--</td></tr>
           <tr><td class="l">Accel</td><td id="i-ax">--</td><td id="i-ay">--</td><td id="i-az">--</td></tr>
-          <tr><td class="l">Spare</td><td id="i-s1">--</td><td id="i-s2">--</td><td></td></tr>
         </tbody>
       </table>
+      <div class="kv"><span>Max G</span><span class="v" id="v-rg">--</span></div>
+      <div class="kv"><span>Orientation</span><span class="v" id="i-ud">--</span></div>
+      <div class="kv"><span>Direction</span><span class="v" id="i-lr">--</span></div>
     </div>
 
     <div class="card" id="c-rec"><h2><span>Records</span><button class="reset" id="btn-reset">Reset</button></h2>
-      <div class="kv"><span>Max G</span><span class="v" id="v-rg">--</span></div>
+      <div class="kv"><span>Max ESC Temp</span><span class="v" id="v-rtmp">--</span></div>
       <div class="kv"><span>Max ESC Amps</span><span class="v" id="v-ra">--</span></div>
       <div class="kv"><span>Max Total Amps</span><span class="v" id="v-rt">--</span></div>
       <div class="kv"><span>Min Volts</span><span class="v" id="v-rv">--</span></div>
       <div class="kv"><span>Max Avg Spd</span><span class="v" id="v-rs">--</span></div>
     </div>
 
-    <div class="card" id="c-arr"><h2>Array</h2><div class="dots" id="dots"></div></div>
+    <div class="card" id="c-arr"><h2>State</h2><div class="dots" id="dots"></div></div>
 
     <div class="card" id="c-bulk"><h2>Bulk Text</h2><div class="bulk" id="v-bulk"></div></div>
 
@@ -396,6 +437,8 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
   </div>
   <div class="tgrid" id="tgrid"></div>
 </div>
+
+<div class="toast" id="toast"></div>
 
 <div class="modal" id="modal">
   <div class="mbox">
@@ -418,7 +461,7 @@ const CELLS = 6, CELL_WARN = 3.7, CELL_LOW = 3.5;   // 22.2 V / 21.0 V on 6S
 const lastEsc = {}, lastAvgRow = {};
 let lastAvgV = "", lastAvgA = "";
 
-const ESC_ROWS = [["Thr %","thr",0],["Volts","v",1],["Amps","a",1],["Temp °C","t",0],["RPM","rpm",0],["Spd km/h","spd",1],["Link %","link",0]];
+const ESC_ROWS = [["Thr %","thr",0,"%"],["Volts","v",1,"V"],["Amps","a",1,"A"],["Temp °C","t",0,"°C"],["RPM","rpm",0,"rpm"],["Spd km/h","spd",1,"km/h"],["Link %","link",0,"%"]];   // [label, key, decimals, unit shown in the Avg column]
 $('esc-body').innerHTML = ESC_ROWS.map(([l,k]) =>
   `<tr><td class="l">${l}</td>` + [1,2,3,4,5].map(n => `<td id="e${n}-${k}"></td>`).join("") + `</tr>`).join("");
 
@@ -435,14 +478,19 @@ for (let i = 0; i < 20; i++) dHtml += `<div class="dc"><div class="dot" id="d${i
 $('dots').innerHTML = dHtml;
 
 // ---- tuning page ----
+const NSTR = 5;   // the first 5 tuning variables hold text (must match NUM_TUNE_STR in the sketch)
 let tHtml = "";
 for (let i = 0; i < 20; i++)
-  tHtml += `<div class="card tv"><label id="tn${i}">Var ${i + 1}</label><input id="tin${i}" type="number" step="any" placeholder="0"></div>`;
+  tHtml += i < NSTR
+    ? `<div class="card tv str"><label id="tn${i}">Var ${i + 1}</label><input id="tin${i}" type="text" maxlength="31" placeholder="text" autocomplete="off" autocapitalize="off" spellcheck="false"></div>`
+    : `<div class="card tv"><label id="tn${i}">Var ${i + 1}</label><input id="tin${i}" type="number" step="any" placeholder="0"></div>`;
 $('tgrid').innerHTML = tHtml;
 for (let i = 0; i < 20; i++) {
   $('tin' + i).addEventListener('change', e => {
+    if (!websocket || websocket.readyState !== 1) return;
+    if (i < NSTR) { websocket.send(`set,${i},${e.target.value}`); return; }   // text: sent as typed
     const v = parseFloat(e.target.value);
-    if (!isNaN(v) && websocket && websocket.readyState === 1) websocket.send(`set,${i},${v}`);
+    if (!isNaN(v)) websocket.send(`set,${i},${v}`);
   });
 }
 
@@ -454,7 +502,7 @@ const tmsg = t => { $('tmsg').textContent = t; };
 $('btn-psave').onclick = () => {
   if (!tuneNames.length || !lastTune.length) { tmsg('Not connected yet'); return; }
   let t = "# Whale Tuning parameters\n# NAME,value  (lines starting with # are ignored)\n";
-  tuneNames.forEach((n, i) => { t += `${pname(n)},${+Number(lastTune[i]).toPrecision(7)}\n`; });
+  tuneNames.forEach((n, i) => { t += `${pname(n)},${typeof lastTune[i] === 'string' ? lastTune[i].replace(/[\r\n]+/g, ' ') : +Number(lastTune[i]).toPrecision(7)}\n`; });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([t], { type: 'text/plain' }));
   a.download = 'whale.param';
@@ -475,12 +523,14 @@ $('file-param').addEventListener('change', e => {
     tuneNames.forEach((n, i) => { idx[pname(n).toLowerCase()] = i; });
     let ok = 0, skip = 0;
     String(r.result).split(/\r?\n/).forEach(line => {
-      line = line.replace(/[#;].*$/, '').trim();
-      if (!line) return;
-      const p = line.split(/[\s,=]+/);
-      const i = idx[(p[0] || '').toLowerCase()];
-      const v = parseFloat(p[1]);
-      if (i === undefined || !isFinite(v)) { skip++; return; }
+      line = line.trim();
+      if (!line || line[0] === '#' || line[0] === ';') return;        // blank line or comment
+      const m = line.match(/^([^\s,=]+)[\s,=]+(.*)$/);                 // NAME, then everything after the first separator
+      const i = m ? idx[m[1].toLowerCase()] : undefined;
+      if (i === undefined) { skip++; return; }
+      if (i < NSTR) { websocket.send(`set,${i},${m[2].trim().slice(0, 31)}`); ok++; return; }   // text variable: the rest of the line
+      const v = parseFloat(m[2]);
+      if (!isFinite(v)) { skip++; return; }
       websocket.send(`set,${i},${v}`);
       ok++;
     });
@@ -488,6 +538,25 @@ $('file-param').addEventListener('change', e => {
   };
   r.readAsText(file);
 });
+
+// ---- arm switch lock: Reboot and tuning changes are blocked while channel 3 is high ----
+function toast(t) {
+  const e = $('toast');
+  e.textContent = t;
+  e.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => e.classList.remove('show'), 2500);
+}
+let isLocked = null;
+function setLocked(l, rebootLocked) {
+  $('btn-reboot').disabled = rebootLocked;                       // reboot: only locked when armed AND the link is up
+  if (rebootLocked && $('m-yes').textContent === 'Yes, reboot') $('modal').classList.remove('show');
+  if (l === isLocked) return;
+  isLocked = l;
+  $('btn-pload').disabled = l;                                   // tuning: locked whenever channel 3 is high
+  document.querySelectorAll('#tgrid input').forEach(i => { i.disabled = l; });
+  if (l) toast(rebootLocked ? 'Armed - reboot and tuning locked' : 'Armed (link down) - tuning locked');
+}
 
 // ---- websocket ----
 let websocket, lastMsg = 0;
@@ -499,6 +568,8 @@ function initWebSocket() {
 
 function onMessage(event) {
   const d = JSON.parse(event.data);
+  if (d.blocked) { toast(d.blocked === 'reboot' ? 'Armed - reboot blocked' : 'Armed - tuning locked'); return; }
+  if (d.armed !== undefined) setLocked(!!d.armed, !!d.noreboot);
   lastMsg = Date.now();
 
   set('v-mode', d.mode);
@@ -538,16 +609,17 @@ function onMessage(event) {
     });
     // Avg column: only ESCs that are reporting right now; if none are, show the last average greyed out
     const live = d.esc.filter(e => e.ok);
-    ESC_ROWS.forEach(([l, k, dec]) => {
+    ESC_ROWS.forEach(([l, k, dec, unit]) => {
       const c = $(`e5-${k}`);
       if (live.length) lastAvgRow[k] = f(live.reduce((s, e) => s + e[k], 0) / live.length, dec);
-      c.textContent = lastAvgRow[k] || "";
+      c.innerHTML = lastAvgRow[k] ? lastAvgRow[k] + '<small>' + unit + '</small>' : "";   // number plus a small unit
       c.classList.toggle('stale', !live.length && !!lastAvgRow[k]);
     });
   }
 
   if (d.rec) {
-    set('v-rg', f(d.rec.g, 2) + " g");
+    set('v-rg', f(d.rec.g, 2) + " g");          // Max G lives in the IMU box now
+    set('v-rtmp', f(d.rec.t, 0) + " °C");
     set('v-ra', f(d.rec.a, 1) + " A");
     set('v-rt', f(d.rec.ta, 1) + " A");
     set('v-rv', f(d.rec.v, 1) + " V");
@@ -590,7 +662,7 @@ function onMessage(event) {
   if (d.tune) lastTune = d.tune;
   if (d.tune) d.tune.forEach((v, i) => {
     const inp = $('tin' + i);
-    if (inp && document.activeElement !== inp) inp.value = +Number(v).toFixed(4);   // don't overwrite while typing
+    if (inp && document.activeElement !== inp) inp.value = (typeof v === 'string') ? v : +Number(v).toFixed(4);   // don't overwrite while typing
   });
 
   if (d.out) d.out.forEach((v, i) => {
@@ -602,7 +674,9 @@ function onMessage(event) {
     const m = d.imu;
     set('i-gx', m.gx); set('i-gy', m.gy); set('i-gz', m.gz);
     set('i-ax', m.ax); set('i-ay', m.ay); set('i-az', m.az);
-    set('i-s1', m.s1); set('i-s2', m.s2);
+    // arrows you drive from the sketch: 1 / -1 / 0 (blank)
+    set('i-ud', m.ud > 0 ? "⬆️" : m.ud < 0 ? "⬇️" : "--");
+    set('i-lr', m.lr > 0 ? "➡️" : m.lr < 0 ? "⬅️" : "--");
   }
 
   if (d.arr) d.arr.forEach((v, i) => $('d' + i).classList.toggle('on', !!v));
@@ -625,7 +699,7 @@ function ask(detail, yesLabel, action) {
   pendingAction = action;
   modal.classList.add('show');
 }
-$('btn-reset').onclick = () => ask('All records (Max G, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
+$('btn-reset').onclick = () => ask('All records (Max G, Max ESC Temp, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
 $('btn-reboot').onclick = () => ask('The board will restart. Motors lose their signal and the page reconnects in a few seconds.', 'Yes, reboot', () => wsSend('reboot'));
 $('m-no').onclick = () => modal.classList.remove('show');
 modal.onclick = e => { if (e.target === modal) modal.classList.remove('show'); };
@@ -747,34 +821,6 @@ void showLeds() {
   spi_device_transmit(ledDev, &t);
 }
 
-void ledTask(void *pvParameters) {
-  ledInit();
-
-  uint8_t hue = 0;
-  TickType_t lastWake = xTaskGetTickCount();
-
-  for (;;) {
-    if (otaInProgress == false) {
-      for (int i = 0; i < NUM_LEDS; i++) {
-        uint8_t h = hue + i * (256 / NUM_LEDS);
-        uint8_t region = h / 43, rem = (h - region * 43) * 6;
-        uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
-        switch (region) {
-          case 0: leds[i] = { v, t, 0 }; break;
-          case 1: leds[i] = { q, v, 0 }; break;
-          case 2: leds[i] = { 0, v, t }; break;
-          case 3: leds[i] = { 0, q, v }; break;
-          case 4: leds[i] = { t, 0, v }; break;
-          default: leds[i] = { v, 0, q }; break;
-        }
-      }
-      hue++;
-      showLeds();
-    }
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1));
-  }
-}
-
 HardwareSerial crsfSerial(1);
 AlfredoCRSF crsf;
 
@@ -785,9 +831,9 @@ int roll = 0;
 int pitch = 0;
 int yaw = 0;
 
-int roll_flip = 70;
+int roll_flip = 20;
 
-const int RPnumReadings = 50;
+const int RPnumReadings = 10;
 int RPreadings[RPnumReadings];
 int RPreadIndex = 0;
 int RPtotal = 0;
@@ -820,7 +866,8 @@ unsigned long previousMicros = 0;
 bool safe_switch = 0;
 bool safe_sticks = 0;
 bool safe_link = 0;
-bool safed = 0;
+bool safed = 1;
+bool IMU_safe = 1;
 
 MPU6050 mpu;
 
@@ -881,10 +928,12 @@ void imuTask(void *arg) {
       roll = (int)fabsf(ypr[2] * 180.0f / M_PI);
 
       RPtotal -= RPreadings[RPreadIndex];
-      RPreadings[RPreadIndex] = min(roll + pitch, roll_flip * 2);
+      RPreadings[RPreadIndex] = min(roll + pitch, 70 * 2);
       RPtotal += RPreadings[RPreadIndex];
       RPreadIndex = (RPreadIndex + 1) % RPnumReadings;
       RP = RPtotal / RPnumReadings;
+
+      Serial.println(RP);
 
       mpu.dmpGetGyro(&gy, fifoBuffer);
       mpu.dmpGetAccel(&aa, fifoBuffer);
@@ -935,12 +984,27 @@ bool escPresent(int i) {
   return escs[i].ageUs() < ESC_STALE_US && isfinite(escs[i].voltage());
 }
 
-float escSpeed(int i) {
-  float rpmOut = escs[i].rpm() / gearbox_ratio[i];
-  return (wheel_diamiter[i] / 10) * rpmOut * 0.001885;
+// Throttle shown on the page, in %: (output - 1500) / 5. An unset output (0) works out to -300, shown as 0.
+int escThrPct(int i) {
+  int thr = (outChannel[i] - 1500) / 5;
+  return (thr <= -300) ? 0 : thr;
 }
 
-// Called on every pass of loop() (about every 1 ms): updates max current, min voltage, max average speed
+// ESC current, forced to 0 while the throttle reads 0. The ESC sends no new readings at zero throttle,
+// so its last current would otherwise stay stuck at a non-zero value.
+float escCurrent(int i) {
+  return (escThrPct(i) == 0) ? 0.0f : escs[i].current();
+}
+
+float escSpeed(int i) {
+  float rpmOut = escs[i].rpm() / gearbox_ratio[i];
+  float spd = (wheel_diamiter[i] / 10) * rpmOut * 0.001885;
+  // The ESC's eRPM telemetry has no direction in it, so the sign comes from the command:
+  // an output below 1500 means the motor was told to run backwards, so the speed shows negative.
+  return (outChannel[i] < 1500) ? -spd : spd;
+}
+
+// Called on every pass of loop() (about every 1 ms): updates max temperature, max current, min voltage, max average speed
 void updateRecords() {
   float sumSpd = 0;
   float sumA = 0;
@@ -949,7 +1013,9 @@ void updateRecords() {
     if (!escPresent(i)) continue;
     n++;
     float v = escs[i].voltage();
-    float a = escs[i].current();
+    float a = escCurrent(i);
+    float t = escs[i].temperatureC();
+    if (isfinite(t) && t > recMaxTemp) recMaxTemp = t;
     if (a > recMaxA) recMaxA = a;
     sumA += a;
     if (v > 1.0f && (recMinV == 0 || v < recMinV)) recMinV = v;
@@ -967,9 +1033,9 @@ void addEsc(JsonArray arr, int i, bool ok) {
   o["ok"] = ok;
   if (!ok) return;  // absent ESC -> page leaves its column blank
   float rpmOut = escs[i].rpm() / gearbox_ratio[i];
-  o["thr"] = (outChannel[i] - 1500) / 5;
+  o["thr"] = escThrPct(i);  // an unset output (0) works out to -300 %, shown as 0 %
   o["v"] = escs[i].voltage();
-  o["a"] = escs[i].current();
+  o["a"] = escCurrent(i);
   o["t"] = escs[i].temperatureC();
   o["rpm"] = rpmOut;
   o["spd"] = escSpeed(i);
@@ -987,6 +1053,18 @@ int wifiRssi() {
       if (list.sta[i].rssi > best) best = list.sta[i].rssi;
   }
   return best;
+}
+
+// true while the arm switch (channel 3) is high. Checked on the channel value alone, like mixer.ino does, so a
+// stale high reading after the link drops still counts as armed (blocking is the safe side).
+bool armSwitchHigh() {
+  return txchannel[ARM_CHANNEL] > ARM_HIGH_US;
+}
+
+// A reboot is only blocked while armed AND the link is up. With the link down (transmitter off / out of range)
+// the switch reading is stale, and rebooting is allowed so you can recover the board. Tuning stays locked by armSwitchHigh().
+bool rebootBlocked() {
+  return armSwitchHigh() && crsf.isLinkUp();
 }
 
 String getSerializedData() {
@@ -1012,7 +1090,7 @@ String getSerializedData() {
     addEsc(escArr, i, ok);
     if (ok) {
       sumV += escs[i].voltage();
-      sumA += escs[i].current();
+      sumA += escCurrent(i);
       nEsc++;
     }
   }
@@ -1033,19 +1111,30 @@ String getSerializedData() {
   rx["rssi"] = getSignalQuality(dbm);
   rx["dbm"] = dbm;
   JsonArray ch = rx["ch"].to<JsonArray>();
-  for (int i = 1; i <= 8; i++) ch.add(crsf.getChannel(i));
+  for (int i = 1; i <= 8; i++) ch.add(txchannel[i]);
 
   doc["wifi"] = wifiRssi();
+  doc["armed"] = armSwitchHigh();                             // the page greys out the tuning boxes while true
+  doc["noreboot"] = rebootBlocked();                          // ...and the Reboot button while this is true (armed and link up)
   doc["dbg"] = dbgLine;                                       // built once a second in loop() (walking the heap every update would be wasteful)
   doc["up"] = (uint32_t)(esp_timer_get_time() / 1000000ULL);  // seconds since boot
 
   // Tuning values
   JsonArray tune = doc["tune"].to<JsonArray>();
-  for (int i = 0; i < NUM_TUNE; i++) tune.add((float)tuneVal[i]);
+  for (int i = 0; i < NUM_TUNE; i++) {
+    if (i < NUM_TUNE_STR) {
+      char txt[TUNE_STR_LEN];
+      strlcpy(txt, tuneStr[i], TUNE_STR_LEN);  // snapshot, so the JSON gets a consistent copy
+      tune.add(txt);                           // text variables go out as JSON strings
+    } else {
+      tune.add((float)tuneVal[i]);
+    }
+  }
 
   // Records
   JsonObject rec = doc["rec"].to<JsonObject>();
   rec["g"] = (float)recMaxG;
+  rec["t"] = (float)recMaxTemp;
   rec["a"] = (float)recMaxA;
   rec["ta"] = (float)recMaxTotalA;
   rec["v"] = (float)recMinV;
@@ -1063,12 +1152,12 @@ String getSerializedData() {
   imu["ax"] = (int)imuAx;
   imu["ay"] = (int)imuAy;
   imu["az"] = (int)imuAz;
-  imu["s1"] = (int)imuSpare1;
-  imu["s2"] = (int)imuSpare2;
+  imu["ud"] = (int)imuOrient;     // up/down arrow
+  imu["lr"] = (int)imuDirection;  // left/right arrow
 
   // Bool array -> dots
   JsonArray arr = doc["arr"].to<JsonArray>();
-  for (int i = 0; i < ARRAY_SIZE; i++) arr.add(modeArray[i] ? 1 : 0);
+  for (int i = 1; i < ARRAY_SIZE - 1; i++) arr.add(modeArray[i] ? 1 : 0);
 
   String output;
   serializeJson(doc, output);
@@ -1096,21 +1185,44 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
       if (len == 5 && memcmp(data, "reset", 5) == 0) resetRecords();
       else if (len == 6 && memcmp(data, "reboot", 6) == 0) {
-        modeString = "Rebooting";
-        rebootAtMs = millis() + 500;
-        rebootPending = true;
+        if (rebootBlocked()) {
+          client->text("{\"blocked\":\"reboot\"}");  // armed: refuse, and tell the page
+        } else {
+          modeString = "Rebooting";
+          rebootAtMs = millis() + 500;
+          rebootPending = true;
+        }
+      }
+      // armed: tuning values are locked, whatever the page sends
+      else if (len > 4 && memcmp(data, "set,", 4) == 0 && armSwitchHigh()) {
+        client->text("{\"blocked\":\"params\"}");
       }
       // tuning box edited on the page: "set,<index>,<value>"
-      else if (len > 4 && len < 40 && memcmp(data, "set,", 4) == 0) {
-        char buf[40];
+      // numbers: "set,<index>,<number>"   text (the first NUM_TUNE_STR): "set,<index>,<any text, commas allowed>"
+      else if (len > 4 && len < 64 && memcmp(data, "set,", 4) == 0) {
+        char buf[64];
         memcpy(buf, data, len);
         buf[len] = 0;
-        int idx;
-        float val;
-        if (sscanf(buf, "set,%d,%f", &idx, &val) == 2 && idx >= 0 && idx < NUM_TUNE) {
-          tuneVal[idx] = val;
-          tuneChangedMs = millis();
-          tuneDirty = true;  // loop() saves it to flash shortly after
+        char *end;
+        long idx = strtol(buf + 4, &end, 10);
+        if (end != buf + 4 && *end == ',' && idx >= 0 && idx < NUM_TUNE) {
+          const char *val = end + 1;
+          bool changed = false;
+          if (idx < NUM_TUNE_STR) {
+            strlcpy(tuneStr[idx], val, TUNE_STR_LEN);
+            changed = true;
+          } else {
+            char *numEnd;
+            float f = strtof(val, &numEnd);
+            if (numEnd != val) {
+              tuneVal[idx] = f;
+              changed = true;
+            }
+          }
+          if (changed) {
+            tuneChangedMs = millis();
+            tuneDirty = true;  // loop() saves it to flash shortly after
+          }
         }
       }
     }
@@ -1167,6 +1279,11 @@ void setup() {
     gpio_set_level((gpio_num_t)ESC_PINS[i], 0);
   }
 
+  bootState = "Waiting 2s";
+  for (unsigned long start = millis(); millis() - start < 4000;) {
+    drive_escs(0, 0);
+  }
+
   loadTune();  // restore saved tuning values first
 
   Wire.begin(SDA_PIN, SCL_PIN);
@@ -1176,11 +1293,11 @@ void setup() {
 
   bootState = "Receiver init";
   crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
-  if (!crsfSerial)
-    while (1) {
-      Serial.println("Invalid crsfSerial configuration");
-      delay(1000);
-    }
+  if (!crsfSerial) {
+    Serial.println("Invalid crsfSerial configuration");
+    IMU_safe = 0;
+    delay(1000);
+  }
 
   crsf.begin(crsfSerial);
   crsf.setDeviceName("AlfredoCRSF");
@@ -1212,7 +1329,7 @@ void setup() {
   }
   if (!mpuFound) {
     Serial.println("MPU6050 not found - check wiring/address");
-    while (1) delay(1000);
+    IMU_safe = 0;
   }
 
   mpu.setXGyroOffset(-234);
@@ -1303,6 +1420,7 @@ void setup() {
 
   bootState = "Waiting 2s";
   for (unsigned long start = millis(); millis() - start < 2000;) {
+    drive_escs(0, 0);
   }
 
   for (int i = 0; i < NUM_ESC; i++) escs[i].begin(ESC_PINS[i], DSHOT600, true, MOTOR_POLES);
@@ -1312,10 +1430,7 @@ void setup() {
   for (unsigned long start = millis(); millis() - start < 5000;) {
     unsigned long currentMicros = micros();
 
-    if (currentMicros - previousMicros >= INTERVAL_US) {
-      previousMicros += INTERVAL_US;
-      for (int i = 0; i < NUM_ESC; i++) escs[i].sendThrottle(0.f);
-    }
+    drive_escs(0, 0);
 
     // keep the web page updating during the ESC wait (slow, so it won't upset DShot timing much)
     if (millis() - lastBootPush > 250) {
@@ -1348,6 +1463,10 @@ void loop() {
 
   ArduinoOTA.handle();
 
+  if (rebootPending && rebootBlocked()) {  // armed during the 0.5 s countdown: cancel the reboot
+    rebootPending = false;
+    modeString = "Running";
+  }
   if (rebootPending && millis() > rebootAtMs) {
     if (tuneDirty) saveTune();  // don't lose a tuning edit made in the last 2 seconds
     Serial.println("Rebooting...");
@@ -1383,6 +1502,9 @@ void loop() {
   unsigned long now = millis();
   if (now - lastUpdate >= WEB_UPDATE_MS) {
     lastUpdate = now;
+
+    state();
+
     if (ws.count() > 0) {  // nobody watching -> don't build the JSON at all
       uint32_t t0 = micros();
       ws.textAll(getSerializedData());
@@ -1413,16 +1535,16 @@ void loop() {
 
   crsf.update();
   for (int i = 1; i <= 8; i++) {
-    ch[i] = crsf.getChannel(i);
-    if (ch[i] < 1000) {
-      ch[i] = 1000;
+    txchannel[i] = crsf.getChannel(i);
+    if (txchannel[i] < 1000) {
+      txchannel[i] = 1000;
     }
-    if (ch[i] > 2000) {
-      ch[i] = 2000;
+    if (txchannel[i] > 2000) {
+      txchannel[i] = 2000;
     }
   }
 
-  mixer(ch[1], ch[2]);
+  mixer(txchannel[1], txchannel[2]);
 
   outChannel[0] = throttle1;
   outChannel[1] = throttle2;
@@ -1452,20 +1574,17 @@ void loop() {
   }
 
   // Re-try EDT enable on ESCs that aren't reporting (hot-plugged after boot)
-  static uint32_t lastRedetect = 0;
-  if (ESC_REDETECT_MS > 0 && millis() - lastRedetect > ESC_REDETECT_MS) {
-    lastRedetect = millis();
-    for (int i = 0; i < NUM_ESC; i++)
-      if (!escPresent(i)) escs[i].command(DSHOT_CMD_EDT_ENABLE);
-  }
+  // static uint32_t lastRedetect = 0;
+  // if (ESC_REDETECT_MS > 0 && millis() - lastRedetect > ESC_REDETECT_MS) {
+  //   lastRedetect = millis();
+  //   for (int i = 0; i < NUM_ESC; i++)
+  //     if (!escPresent(i)) escs[i].command(DSHOT_CMD_EDT_ENABLE);
+  // }
 
-  // ---- DEMO: remove these once you drive the array / text yourself ----
-  static int demoTick = 0;
-  if (++demoTick % 100 == 0) {
-    int pos = (demoTick / 100) % ARRAY_SIZE;
+  // ---- Bulk text ----
 
-    bulkText = String(throttle1) + "  " + String(throttle2) + "\n" + String(demoTick) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
-  }
+
+  bulkText = String(escs[0].lossPercent()) + "  " + String(escs[1].lossPercent()) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
   // ----------------------------------------------------------------------
 
 
