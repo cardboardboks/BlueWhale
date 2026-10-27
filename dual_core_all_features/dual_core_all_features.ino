@@ -14,10 +14,23 @@
 #include <WiFiAP.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>  // flash (NVS) storage for the tuning values
+#include <esp_system.h>   // esp_reset_reason()
+#include <esp_timer.h>    // esp_timer_get_time() for the uptime counter
+#include <esp_heap_caps.h> // heap_caps_get_largest_free_block() for the diagnostics line
 #include "esp_wifi.h"
 #include "driver/spi_master.h"
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>  // Required for ESP32
+
+// Memory-corruption hunter. 1 = after crsf.begin(), set a hardware watchpoint on the CRSF object's first
+// word. The moment ANY code writes to it, the board panics with a backtrace that shows the guilty function.
+// Leave at 0 for normal running.
+#define DEBUG_WATCH_CRSF 0
+#if DEBUG_WATCH_CRSF
+  #include "esp_cpu.h"
+  #include "esp_ipc.h"
+#endif
+
 
 spi_device_handle_t ledDev;
 
@@ -61,14 +74,16 @@ volatile int16_t imuSpare2 = 0;
 
 // ---- Records (tracked here on the ESP so nothing is missed between page updates) ----
 #define DMP_ACCEL_LSB_PER_G 16384.0f  // accel counts per g (+/-2 g range). If Max G still reads ~0.5 or ~1 at rest, try 8192.0f
-volatile float recMaxG = 0;           // peak acceleration in g with gravity removed (about 0 when sitting still)
-volatile float recMaxA = 0;           // highest current seen on any single ESC
-volatile float recMinV = 0;           // lowest voltage seen on any ESC (0 = nothing recorded yet)
-volatile float recMaxSpd = 0;         // highest AVERAGE speed (average of the ESCs reporting)
+volatile float recMaxG = 0;       // peak acceleration in g with gravity removed (about 0 when sitting still)
+volatile float recMaxA = 0;       // highest current seen on any single ESC
+volatile float recMaxTotalA = 0;  // highest COMBINED current of all reporting ESCs added together
+volatile float recMinV = 0;       // lowest voltage seen on any ESC (0 = nothing recorded yet)
+volatile float recMaxSpd = 0;     // highest AVERAGE speed (average of the ESCs reporting)
 
 void resetRecords() {
   recMaxG = 0;
   recMaxA = 0;
+  recMaxTotalA = 0;
   recMinV = 0;
   recMaxSpd = 0;
 }
@@ -120,12 +135,16 @@ void saveTune() {
 // 8 output channels shown on the page. Write 1000-2000 into these from anywhere, e.g. outChannel[0] = 1750;
 volatile int outChannel[NUM_OUT] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
 
-#define NUM_ESC 4
-float throttleCmd[NUM_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what you send to each ESC
+#define MAX_ESC 4  // how many ESC slots exist (arrays below always have this many entries)
+#define NUM_ESC 4  // how many ESCs are actually used: 1 to MAX_ESC. Change only this number.
+float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what you send to each ESC
 
 // An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
 // so one plugged in after boot can start reporting. Set to 0 to turn this off.
 #define ESC_REDETECT_MS 3000
+
+// An ESC with no valid telemetry for this long (microseconds) is shown as not reporting
+#define ESC_STALE_US 1000000
 
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
@@ -303,7 +322,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <div class="kv"><span>Mode</span><span class="v" id="v-mode">--</span></div>
       <div class="kv"><span>Boot</span><span class="v" id="v-boot">--</span></div>
       <div class="kv"><span>Avg Volts</span><span class="v" id="v-avgv">--</span></div>
-      <div class="kv"><span>Avg Amps</span><span class="v" id="v-avga">--</span></div>
+      <div class="kv"><span>Total Amps</span><span class="v" id="v-avga">--</span></div>
     </div>
 
     <div class="card" id="c-cpu"><h2><span>CPU</span><button class="reset" id="btn-reboot">Reboot</button></h2>
@@ -311,6 +330,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <div class="kv"><span>Core 1</span><span class="v" id="v-c1">--</span></div>
       <div class="kv"><span>Average</span><span class="v" id="v-ca">--</span></div>
       <div class="kv"><span>WiFi</span><span class="v" id="v-wifi">--</span></div>
+      <div class="kv"><span>Uptime</span><span class="v" id="v-up">--</span></div>
     </div>
 
     <div class="card" id="c-esc"><h2>ESCs</h2>
@@ -344,7 +364,8 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
 
     <div class="card" id="c-rec"><h2><span>Records</span><button class="reset" id="btn-reset">Reset</button></h2>
       <div class="kv"><span>Max G</span><span class="v" id="v-rg">--</span></div>
-      <div class="kv"><span>Max Amps</span><span class="v" id="v-ra">--</span></div>
+      <div class="kv"><span>Max ESC Amps</span><span class="v" id="v-ra">--</span></div>
+      <div class="kv"><span>Max Total Amps</span><span class="v" id="v-rt">--</span></div>
       <div class="kv"><span>Min Volts</span><span class="v" id="v-rv">--</span></div>
       <div class="kv"><span>Max Avg Spd</span><span class="v" id="v-rs">--</span></div>
     </div>
@@ -473,9 +494,14 @@ function onMessage(event) {
 
   set('v-mode', d.mode);
   set('v-boot', d.boot);
-  $('v-bulk').textContent = d.bulk || "";
+  $('v-bulk').textContent = (d.bulk || "") + (d.dbg ? "\n" + d.dbg : "");
 
   if (d.cpu) { set('v-c0', f(d.cpu[0],1)+" %"); set('v-c1', f(d.cpu[1],1)+" %"); set('v-ca', f(d.cpu[2],1)+" %"); }
+
+  if (d.up !== undefined) {
+    const u = d.up, days = Math.floor(u / 86400), p2 = x => String(x).padStart(2, '0');
+    set('v-up', (days ? days + 'd ' : '') + Math.floor(u % 86400 / 3600) + ':' + p2(Math.floor(u % 3600 / 60)) + ':' + p2(u % 60));
+  }
 
   if (d.wifi !== undefined) {
     const wf = $('v-wifi');
@@ -489,6 +515,7 @@ function onMessage(event) {
   }
 
   if (d.esc) {
+    for (let n = d.esc.length + 1; n <= 4; n++) $('eh' + n).classList.add('off');   // slots the firmware isn't using
     d.esc.forEach((e, i) => {
       const n = i + 1;
       if (e.ok) lastEsc[n] = e;                 // remember the last good reading
@@ -513,6 +540,7 @@ function onMessage(event) {
   if (d.rec) {
     set('v-rg', f(d.rec.g, 2) + " g");
     set('v-ra', f(d.rec.a, 1) + " A");
+    set('v-rt', f(d.rec.ta, 1) + " A");
     set('v-rv', f(d.rec.v, 1) + " V");
     set('v-rs', f(d.rec.s, 1) + " km/h");
   }
@@ -588,7 +616,7 @@ function ask(detail, yesLabel, action) {
   pendingAction = action;
   modal.classList.add('show');
 }
-$('btn-reset').onclick = () => ask('Max G, Max Amps, Min Volts and Max Avg Speed will all be reset to 0.', 'Yes, reset', () => wsSend('reset'));
+$('btn-reset').onclick = () => ask('All records (Max G, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
 $('btn-reboot').onclick = () => ask('The board will restart. Motors lose their signal and the page reconnects in a few seconds.', 'Yes, reboot', () => wsSend('reboot'));
 $('m-no').onclick = () => modal.classList.remove('show');
 modal.onclick = e => { if (e.target === modal) modal.classList.remove('show'); };
@@ -633,12 +661,13 @@ window.addEventListener('load', () => { initWebSocket(); route(); setTimeout(fit
 // ESC signal pins, in web-page order (ESC 1..4).
 // ESC 1 = GPIO 2 and ESC 2 = GPIO 1, matching your original (swapped) begin() calls.
 // ESC 3 and ESC 4 pins are a guess - change them to wherever you wire them.
-const int ESC_PINS[NUM_ESC] = { 2, 1, 9, 10 };
+const int ESC_PINS[MAX_ESC] = { 2, 1, 9, 10 };
 const uint8_t MOTOR_POLES = 14;
 
 AlfredoDShot escs[NUM_ESC];
 
 ESPCpuMonitor cpuMonitor;
+bool cpuMonitorOk = false;  // only true once init() succeeded; getLastSample() on an un-started monitor would crash
 
 #define PIN_RX 5
 #define PIN_TX 4
@@ -770,8 +799,8 @@ volatile int16_t imuAx = 0, imuAy = 0, imuAz = 0;
 // volatile float core1 = 0;
 // volatile float coreA = 0;
 
-int gearbox_ratio[NUM_ESC] = { 19, 19, 19, 19 };
-int wheel_diamiter[NUM_ESC] = { 101, 101, 101, 101 };  // in mm
+int gearbox_ratio[MAX_ESC] = { 19, 19, 19, 19 };
+int wheel_diamiter[MAX_ESC] = { 101, 101, 101, 101 };  // in mm
 
 const unsigned long INTERVAL_US = 1000;
 unsigned long previousMicros = 0;
@@ -806,6 +835,7 @@ struct Med3 {
   }
 };
 
+volatile uint32_t dbgMaxLoopGapUs = 0;  // longest pause between loop() passes during the last second (diagnostics line)
 volatile uint32_t imuBadPackets = 0;  // corrupted IMU packets thrown away (printed in the diag line)
 
 void imuTask(void *arg) {
@@ -879,10 +909,12 @@ void imuTask(void *arg) {
 }
 
 // ---------------- JSON for the web page ----------------
-// An ESC counts as present when it is reporting a sensible voltage and its link isn't dead.
-// Tweak this one function if your ESCs behave differently when unplugged.
+// An ESC counts as present while it keeps sending valid telemetry. ageUs() is the time since the last
+// good frame (huge if there never was one), so an ESC that goes quiet or is unplugged drops out after
+// ESC_STALE_US. voltage() is NaN until the first extended-telemetry frame, so that must have arrived too.
+// (Not lossPercent(): that is a running total since boot and almost never reaches 100.)
 bool escPresent(int i) {
-  return escs[i].voltage() > 1.0f && escs[i].lossPercent() < 100;
+  return escs[i].ageUs() < ESC_STALE_US && isfinite(escs[i].voltage());
 }
 
 float escSpeed(int i) {
@@ -893,6 +925,7 @@ float escSpeed(int i) {
 // Called on every pass of loop() (about every 1 ms): updates max current, min voltage, max average speed
 void updateRecords() {
   float sumSpd = 0;
+  float sumA = 0;
   int n = 0;
   for (int i = 0; i < NUM_ESC; i++) {
     if (!escPresent(i)) continue;
@@ -900,10 +933,12 @@ void updateRecords() {
     float v = escs[i].voltage();
     float a = escs[i].current();
     if (a > recMaxA) recMaxA = a;
+    sumA += a;
     if (v > 1.0f && (recMinV == 0 || v < recMinV)) recMinV = v;
     sumSpd += fabsf(escSpeed(i));
   }
   if (n > 0) {
+    if (sumA > recMaxTotalA) recMaxTotalA = sumA;
     float avgSpd = sumSpd / n;
     if (avgSpd > recMaxSpd) recMaxSpd = avgSpd;
   }
@@ -922,6 +957,8 @@ void addEsc(JsonArray arr, int i, bool ok) {
   o["spd"] = escSpeed(i);
   o["link"] = (float)escs[i].lossPercent();  // adjust if you want a different "link" metric
 }
+
+static const crsfLinkStatistics_t emptyLink = {};  // all zeros, used if the library ever returns no stats
 
 // WiFi signal strength (dBm) of the strongest phone/laptop connected to our access point; -127 = nobody connected
 int wifiRssi() {
@@ -965,12 +1002,13 @@ String getSerializedData() {
   avg["n"] = nEsc;
   if (nEsc > 0) {
     avg["v"] = sumV / nEsc;
-    avg["a"] = sumA / nEsc;
+    avg["a"] = sumA;  // total current of the reporting ESCs (not averaged); the "a" key name is just historical
   }
 
   // Receiver
   JsonObject rx = doc["rx"].to<JsonObject>();
   const crsfLinkStatistics_t *link = crsf.getLinkStatistics();
+  if (link == nullptr) link = &emptyLink;  // never dereference a null stats pointer
   int dbm = -(int)(link->active_antenna == 0 ? link->uplink_RSSI_1 : link->uplink_RSSI_2);
   rx["up"] = crsf.isLinkUp();
   rx["lq"] = link->uplink_Link_quality;
@@ -980,6 +1018,15 @@ String getSerializedData() {
   for (int i = 1; i <= 8; i++) ch.add(crsf.getChannel(i));
 
   doc["wifi"] = wifiRssi();
+  // diagnostics line shown under the bulk text: free heap, lowest it has been, largest single free block,
+  // longest loop gap in the last second, and connected web clients
+  char dbg[96];
+  snprintf(dbg, sizeof(dbg), "heap %uk  min %uk  blk %uk | gap %ums | ws %u",
+           (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
+           (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024),
+           (unsigned)(dbgMaxLoopGapUs / 1000), (unsigned)ws.count());
+  doc["dbg"] = dbg;
+  doc["up"] = (uint32_t)(esp_timer_get_time() / 1000000ULL);  // seconds since boot
 
   // Tuning values
   JsonArray tune = doc["tune"].to<JsonArray>();
@@ -989,6 +1036,7 @@ String getSerializedData() {
   JsonObject rec = doc["rec"].to<JsonObject>();
   rec["g"] = (float)recMaxG;
   rec["a"] = (float)recMaxA;
+  rec["ta"] = (float)recMaxTotalA;
   rec["v"] = (float)recMinV;
   rec["s"] = (float)recMaxSpd;
 
@@ -1070,12 +1118,32 @@ float peakHold(float raw, float peak) {
   return raw * PEAK_DECAY_ALPHA + peak * (1.0f - PEAK_DECAY_ALPHA);
 }
 
+#if DEBUG_WATCH_CRSF
+static void armCrsfWatch(void *) {
+  esp_cpu_set_watchpoint(0, (const void *)&crsf, 4, ESP_CPU_WATCHPOINT_STORE);  // per-core, so run it on both
+}
+#endif
+
+// Why the board last restarted - shown on the page and printed at boot. This is the quickest way to tell
+// a brownout (power dip) from a crash (PANIC), a watchdog (IWDT / TWDT) or a normal restart (SW / PWR).
+const char *resetReasonShort() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "PWR";
+    case ESP_RST_EXT: return "EXT";
+    case ESP_RST_SW: return "SW";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "IWDT";
+    case ESP_RST_TASK_WDT: return "TWDT";
+    case ESP_RST_WDT: return "WDT";
+    case ESP_RST_BROWNOUT: return "BROWN";
+    case ESP_RST_DEEPSLEEP: return "SLEEP";
+    default: return "?";
+  }
+}
+
 void setup() {
-  // Serial first, so nothing printed during setup is lost. On boards using the native USB port
-  // this waits (up to 1.5 s) for the serial monitor to attach; on a UART-bridge port it returns at once.
-  Serial.begin(115200);
-  for (unsigned long t = millis(); !Serial && millis() - t < 1500;) delay(10);
-  Serial.println("\n=== Whale boot ===");
+  Serial.begin(115200);  // started first so the prints below work
+  Serial.printf("Reset reason: %s\n", resetReasonShort());
 
   bootState = "GPIO init";
 
@@ -1098,23 +1166,43 @@ void setup() {
   bootState = "Receiver init";
   crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
   if (!crsfSerial)
-    while (1) Serial.println("Invalid crsfSerial configuration");
+    while (1) {
+      Serial.println("Invalid crsfSerial configuration");
+      delay(1000);
+    }
 
   crsf.begin(crsfSerial);
   crsf.setDeviceName("AlfredoCRSF");
+#if DEBUG_WATCH_CRSF
+  armCrsfWatch(nullptr);                            // this core (setup runs on core 1)
+  esp_ipc_call_blocking(0, armCrsfWatch, nullptr);  // and core 0 (IMU / LED tasks)
+#endif
 
   for (int i = 0; i < RPnumReadings; i++) RPreadings[i] = 0;
   for (int i = 0; i < YnumReadings; i++) Yreadings[i] = 0;
   for (int i = 0; i < ARRAY_SIZE; i++) flagArray[i] = false;
 
   bootState = "IMU init";
-  mpu.initialize();
-  if (!mpu.testConnection()) {
+  // The I2C bus on a breadboard can glitch, so try the IMU several times (restarting the bus between
+  // attempts) before giving up. dmpInitialize() returns 0 on success.
+  uint8_t devStatus = 1;
+  bool mpuFound = false;
+  for (int attempt = 1; attempt <= 5 && devStatus != 0; attempt++) {
+    mpu.initialize();
+    mpuFound = mpu.testConnection();
+    if (mpuFound) devStatus = mpu.dmpInitialize();
+    if (devStatus != 0) {
+      Serial.printf("IMU init attempt %d failed (found=%d, dmp code=%d)\n", attempt, (int)mpuFound, (int)devStatus);
+      Wire.end();
+      delay(100);
+      Wire.begin(SDA_PIN, SCL_PIN);
+      Wire.setClock(100000);
+    }
+  }
+  if (!mpuFound) {
     Serial.println("MPU6050 not found - check wiring/address");
     while (1) delay(1000);
   }
-
-  uint8_t devStatus = mpu.dmpInitialize();
 
   mpu.setXGyroOffset(-234);
   mpu.setYGyroOffset(24);
@@ -1235,12 +1323,13 @@ void setup() {
   cpucfg.enablePerCore = true;
   cpucfg.enableTemperature = false;
 
-  if (!cpuMonitor.init(cpucfg)) {
+  cpuMonitorOk = cpuMonitor.init(cpucfg);
+  if (!cpuMonitorOk) {
     Serial.println("CPU monitor init failed");
     return;
   }
 
-  bootState = "Ready";
+  bootState = String("Ready (") + resetReasonShort() + ")";  // e.g. Ready (PANIC), Ready (BROWN), Ready (PWR)
   modeString = "Running";
 }
 
@@ -1258,13 +1347,20 @@ void loop() {
     return;
   }
 
-  static uint32_t lastDiagMs = 0;
-  if (millis() - lastDiagMs >= 1000) {
-    lastDiagMs = millis();
-    ws.cleanupClients();  // drops dead/stalled web clients so their queued messages don't pile up in RAM
-    Serial.printf("diag: heap=%u min=%u maxLoopGap=%lums wsClients=%u link=%s imuBad=%u\n",
-                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
-                  (unsigned long)(maxGapUs / 1000), (unsigned)ws.count(), crsf.isLinkUp() ? "UP" : "DOWN", (unsigned)imuBadPackets);
+
+  // longest gap between loop() passes, reported once a second on the page's diagnostics line
+  static uint32_t lastLoopUs = micros();
+  static uint32_t maxGapUs = 0;
+  uint32_t nowUs = micros();
+  if (nowUs - lastLoopUs > maxGapUs) maxGapUs = nowUs - lastLoopUs;
+  lastLoopUs = nowUs;
+
+  // once a second, drop dead/stalled web clients so their queued messages don't pile up in RAM
+  static uint32_t lastCleanupMs = 0;
+  if (millis() - lastCleanupMs >= 1000) {
+    lastCleanupMs = millis();
+    ws.cleanupClients();
+    dbgMaxLoopGapUs = maxGapUs;
     maxGapUs = 0;
   }
 
@@ -1282,7 +1378,7 @@ void loop() {
   if (millis() - lastCpuMs >= 10) {
     lastCpuMs = millis();
     CpuUsageSample sample;
-    if (cpuMonitor.getLastSample(sample)) {
+    if (cpuMonitorOk && cpuMonitor.getLastSample(sample)) {
       core0Peak = peakHold(sample.perCore[0], core0Peak);
       core1Peak = peakHold(sample.perCore[1], core1Peak);
       coreAveragePeak = peakHold(sample.average, coreAveragePeak);
