@@ -53,7 +53,7 @@ String bootState = "Starting";  // <- updated during setup()
 String bulkText = "";           // <- free text box, put anything in here
 
 #define ARRAY_SIZE 20
-volatile bool flagArray[ARRAY_SIZE];  // <- set any slot true to light its green dot
+volatile bool modeArray[ARRAY_SIZE];  // <- set any slot true to light its green dot
 
 // Volatile variables for the raw readings
 volatile float core0 = 0;
@@ -68,6 +68,10 @@ volatile float coreAveragePeak = 0;  // Added system average peak-hold tracker
 // NEW: Decay rate coefficient (Value between 0.0 and 1.0)
 // Lower value = slower decay (e.g., 0.05 is very smooth, 0.20 is faster)
 const float PEAK_DECAY_ALPHA = 0.01f;
+
+static uint32_t maxGapUs = 0;
+static uint32_t jsonMaxUs = 0;  // longest time spent building + sending a web update this second
+static uint32_t escMaxUs = 0;   // longest time spent in the ESC send block this second
 
 volatile int16_t imuSpare1 = 0;  // two spare IMU fields
 volatile int16_t imuSpare2 = 0;
@@ -132,8 +136,11 @@ void saveTune() {
 }
 
 #define NUM_OUT 8
-// 8 output channels shown on the page. Write 1000-2000 into these from anywhere, e.g. outChannel[0] = 1750;
-volatile int outChannel[NUM_OUT] = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 };
+// 8 output channels - write 1000-2000
+volatile int outChannel[NUM_OUT] = { 1500 };
+
+// rx intput channels - read 1000-2000
+int ch[10] = { 1500 };
 
 #define MAX_ESC 4                                             // how many ESC slots exist (arrays below always have this many entries)
 #define NUM_ESC 2                                             // how many ESCs are actually used: 1 to MAX_ESC. Change only this number.
@@ -797,15 +804,23 @@ volatile int Y = 0;
 volatile int16_t imuGx = 0, imuGy = 0, imuGz = 0;
 volatile int16_t imuAx = 0, imuAy = 0, imuAz = 0;
 
-// volatile float core0 = 0;
-// volatile float core1 = 0;
-// volatile float coreA = 0;
+//  esc varibles
+int throttle1 = 0;
+int throttle2 = 0;
+int drive1_pwm = 0;
+int drive2_pwm = 0;
 
 int gearbox_ratio[MAX_ESC] = { 19, 19, 19, 19 };
 int wheel_diamiter[MAX_ESC] = { 101, 101, 101, 101 };  // in mm
 
 const unsigned long INTERVAL_US = 1000;
 unsigned long previousMicros = 0;
+
+// pre arm safe varibles
+bool safe_switch = 0;
+bool safe_sticks = 0;
+bool safe_link = 0;
+bool safed = 0;
 
 MPU6050 mpu;
 
@@ -952,7 +967,7 @@ void addEsc(JsonArray arr, int i, bool ok) {
   o["ok"] = ok;
   if (!ok) return;  // absent ESC -> page leaves its column blank
   float rpmOut = escs[i].rpm() / gearbox_ratio[i];
-  o["thr"] = throttleCmd[i] * 100.0f;
+  o["thr"] = (outChannel[i] - 1500) / 5;
   o["v"] = escs[i].voltage();
   o["a"] = escs[i].current();
   o["t"] = escs[i].temperatureC();
@@ -1053,7 +1068,7 @@ String getSerializedData() {
 
   // Bool array -> dots
   JsonArray arr = doc["arr"].to<JsonArray>();
-  for (int i = 0; i < ARRAY_SIZE; i++) arr.add(flagArray[i] ? 1 : 0);
+  for (int i = 0; i < ARRAY_SIZE; i++) arr.add(modeArray[i] ? 1 : 0);
 
   String output;
   serializeJson(doc, output);
@@ -1176,7 +1191,7 @@ void setup() {
 
   for (int i = 0; i < RPnumReadings; i++) RPreadings[i] = 0;
   for (int i = 0; i < YnumReadings; i++) Yreadings[i] = 0;
-  for (int i = 0; i < ARRAY_SIZE; i++) flagArray[i] = false;
+  for (int i = 0; i < ARRAY_SIZE; i++) modeArray[i] = false;
 
   bootState = "IMU init";
   // The I2C bus on a breadboard can glitch, so try the IMU several times (restarting the bus between
@@ -1346,9 +1361,6 @@ void loop() {
 
   // longest gap between loop() passes, reported once a second on the page's diagnostics line
   static uint32_t lastLoopUs = micros();
-  static uint32_t maxGapUs = 0;
-  static uint32_t jsonMaxUs = 0;  // longest time spent building + sending a web update this second
-  static uint32_t escMaxUs = 0;   // longest time spent in the ESC send block this second
   uint32_t nowUs = micros();
   if (nowUs - lastLoopUs > maxGapUs) maxGapUs = nowUs - lastLoopUs;
   lastLoopUs = nowUs;
@@ -1359,7 +1371,7 @@ void loop() {
     lastCleanupMs = millis();
     ws.cleanupClients();
     dbgMaxLoopGapUs = maxGapUs;
-    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk | gap %.1fms json %.1fms esc %.1fms | ws %u",
+    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk \ngap %.1fms json %.1fms esc %.1fms | ws %u",
              (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
              (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024),
              maxGapUs / 1000.0f, jsonMaxUs / 1000.0f, escMaxUs / 1000.0f, (unsigned)ws.count());
@@ -1400,16 +1412,22 @@ void loop() {
   }
 
   crsf.update();
-
-  unsigned long currentMicros = micros();
-
-  if (currentMicros - previousMicros >= INTERVAL_US) {
-    previousMicros += INTERVAL_US;
-    uint32_t t0 = micros();
-    for (int i = 0; i < NUM_ESC; i++) escs[i].sendThrottle(throttleCmd[i]);
-    uint32_t d = micros() - t0;
-    if (d > escMaxUs) escMaxUs = d;
+  for (int i = 1; i <= 8; i++) {
+    ch[i] = crsf.getChannel(i);
+    if (ch[i] < 1000) {
+      ch[i] = 1000;
+    }
+    if (ch[i] > 2000) {
+      ch[i] = 2000;
+    }
   }
+
+  mixer(ch[1], ch[2]);
+
+  outChannel[0] = throttle1;
+  outChannel[1] = throttle2;
+
+  drive_escs(drive1_pwm, drive2_pwm);
 
   updateRecords();  // max/min records, checked on every pass so short peaks aren't missed
 
@@ -1445,8 +1463,8 @@ void loop() {
   static int demoTick = 0;
   if (++demoTick % 100 == 0) {
     int pos = (demoTick / 100) % ARRAY_SIZE;
-    for (int i = 0; i < ARRAY_SIZE; i++) flagArray[i] = (i == pos);
-    bulkText = "Demo text, tick " + String(demoTick) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
+
+    bulkText = String(throttle1) + "  " + String(throttle2) + "\n" + String(demoTick) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
   }
   // ----------------------------------------------------------------------
 
