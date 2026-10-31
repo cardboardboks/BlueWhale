@@ -136,6 +136,7 @@ String getSerializedData() {
   imu["az"] = (int)imuAz;
   imu["ud"] = (int)imuOrient;     // up/down arrow
   imu["lr"] = (int)imuDirection;  // left/right arrow
+  imu["ok"] = imuAlive();         // false = IMU dropout (no good packet lately); the page shows LOST and greys the numbers
 
   // Bool array -> dots
   JsonArray arr = doc["arr"].to<JsonArray>();

@@ -86,7 +86,7 @@ th.off { opacity: .3; }
 /* hide the up/down spinner arrows on number boxes (desktop browsers) */
 .tv input::-webkit-outer-spin-button, .tv input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .tv input[type=number] { -moz-appearance: textfield; appearance: textfield; }
-#c-rec h2, #c-cpu h2 { display: flex; justify-content: space-between; align-items: center; }
+#c-rec h2, #c-cpu h2, #c-imu h2 { display: flex; justify-content: space-between; align-items: center; }
 .reset { font: inherit; font-size: .8rem; text-transform: none; letter-spacing: 0; padding: 0 8px; border-radius: 6px;
          border: 1px solid rgba(255,69,58,.5); background: rgba(255,69,58,.15); color: var(--bad); }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 10; }
@@ -207,7 +207,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <div class="chs" id="ochs"></div>
     </div>
 
-    <div class="card" id="c-imu"><h2>IMU</h2>
+    <div class="card" id="c-imu"><h2><span>IMU</span><span id="i-state"></span></h2>
       <table class="num">
         <thead><tr><th></th><th>X</th><th>Y</th><th>Z</th></tr></thead>
         <tbody>
@@ -483,6 +483,11 @@ function onMessage(event) {
     set('i-gx', m.gx); set('i-gy', m.gy); set('i-gz', m.gz);
     set('i-ax', m.ax); set('i-ay', m.ay); set('i-az', m.az);
     // arrows you drive from the sketch: 1 / -1 / 0 (blank)
+    // IMU dropout: show LOST in the heading and grey out the numbers until packets come back
+    const imuOk = m.ok !== false;
+    set('i-state', imuOk ? "" : "LOST");
+    $('i-state').className = imuOk ? "" : "bad";
+    ['i-gx','i-gy','i-gz','i-ax','i-ay','i-az','v-rg'].forEach(id => $(id).classList.toggle('stale', !imuOk));
     set('i-ud', m.ud > 0 ? "⬆️" : m.ud < 0 ? "⬇️" : "--");
     set('i-lr', m.lr > 0 ? "➡️" : m.lr < 0 ? "⬅️" : "--");
   }
