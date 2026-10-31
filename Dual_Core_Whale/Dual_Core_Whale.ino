@@ -34,7 +34,7 @@
 
 spi_device_handle_t ledDev;
 
-SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
+// SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);  // Set main loop stack size to 16 KB
 
@@ -892,7 +892,12 @@ bool dmpReady = false;
 // Median of the last 3 samples: throws away a single bad reading without smoothing real movement much
 struct Med3 {
   int16_t v[3] = { 0, 0, 0 };
+  bool primed = false;
   int16_t add(int16_t x) {
+    if (!primed) {  // first sample: fill the window with it, otherwise the 0s it starts with look like a zero reading
+      v[0] = v[1] = v[2] = x;
+      primed = true;
+    }
     v[0] = v[1];
     v[1] = v[2];
     v[2] = x;
@@ -902,8 +907,8 @@ struct Med3 {
 };
 
 volatile uint32_t dbgMaxLoopGapUs = 0;  // longest pause between loop() passes during the last second (diagnostics line)
-char dbgLine[240] = "";                 // diagnostics text shown on the page; rebuilt once a second in loop()
-volatile uint32_t imuReadMaxUs = 0;    // longest single IMU FIFO read this second (it can busy-wait after an overflow)
+char dbgLine[300] = "";                 // diagnostics text shown on the page; rebuilt once a second in loop()
+volatile uint32_t imuReadMaxUs = 0;     // longest single IMU FIFO read this second (it can busy-wait after an overflow)
 volatile uint32_t imuBadPackets = 0;    // corrupted IMU packets thrown away (printed in the diag line)
 volatile uint32_t imuBadOnLate = 0;     // ...of which, how many were read late (took longer than IMU_LATE_US)
 volatile uint32_t imuLateReads = 0;     // reads that took longer than one packet interval
@@ -913,27 +918,135 @@ volatile float imuLastBadQn = 0;        // quaternion length of the most recent 
 // so the IMU task spends over half its time on the bus. 400000 cuts that to ~1.6 ms, but needs short wires and
 // real pull-up resistors (4.7k on SDA and SCL) - on a breadboard it may make bad packets worse. Try it as an experiment.
 #define I2C_CLOCK_HZ 400000
-volatile uint32_t imuCountMaxUs = 0;    // longest FIFO-count read (2 bytes, should take ~0.2 ms) this second
-volatile uint16_t imuFifoMax = 0;       // most bytes seen waiting in the IMU FIFO this second (one packet = 42)
-volatile uint32_t imuMultiPkt = 0;      // times 2 or more packets were waiting (the read fell behind)
-#define IMU_CORE 0         // which core runs the IMU task (0 = with WiFi, 1 = with the main loop). Try 1 as an experiment.
-#define IMU_LATE_US 10000  // a read slower than this (10 ms, one packet interval) counts as "late"
+volatile uint32_t imuCountMaxUs = 0;  // longest FIFO-count read (2 bytes, should take ~0.2 ms) this second
+volatile uint16_t imuFifoMax = 0;     // most bytes seen waiting in the IMU FIFO this second (one packet = 42)
+volatile uint32_t imuMultiPkt = 0;    // times 2 or more packets were waiting (the read fell behind)
+#define IMU_CORE 0                    // which core runs the IMU task (0 = with WiFi, 1 = with the main loop). Try 1 as an experiment.
+#define IMU_LATE_US 10000             // a read slower than this (10 ms, one packet interval) counts as "late"
+
+// ---- Robust IMU bus access ----
+// The library's dmpGetCurrentFIFOPacket() has loops that wait forever if the sensor stops answering (a jumper wire
+// comes loose, power glitches), and it can't tell "no data" from "bus error". So the IMU task reads the FIFO itself,
+// checks every transfer, and never waits in a loop. A bus that keeps failing is un-stuck and the IMU is restarted.
+#define IMU_I2C_ADDR 0x68             // MPU6050 with AD0 low (what the library uses by default)
+#define IMU_PKT 42                    // DMP packet size in bytes
+#define IMU_FAIL_LIMIT 20             // this many failed transfers in a row -> reset the bus and restart the IMU
+#define IMU_I2C_TIMEOUT_MS 20         // give up on a single I2C transfer after this long
+#define IMU_WARMUP 150                // ignore the Max G record for this many good packets (~1.5 s) after start / restart
+volatile uint32_t imuI2cErrors = 0;   // failed I2C transfers
+volatile uint32_t imuRecoveries = 0;  // times the bus was reset and the IMU restarted
+volatile uint32_t imuOverflows = 0;   // times the IMU FIFO was found overflowing and was cleared
+volatile uint16_t imuWarm = 0;
+
+bool imuReadFifoCount(uint16_t &count) {
+  Wire.beginTransmission(IMU_I2C_ADDR);
+  Wire.write(0x72);  // FIFO_COUNT_H
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint8_t)IMU_I2C_ADDR, (size_t)2, true) != 2) return false;
+  uint8_t hi = Wire.read();
+  uint8_t lo = Wire.read();
+  count = ((uint16_t)hi << 8) | lo;
+  return true;
+}
+
+bool imuReadFifo(uint8_t *dst, uint8_t n) {
+  Wire.beginTransmission(IMU_I2C_ADDR);
+  Wire.write(0x74);  // FIFO_R_W
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint8_t)IMU_I2C_ADDR, (size_t)n, true) != n) return false;
+  for (uint8_t i = 0; i < n; i++) dst[i] = Wire.read();
+  return true;
+}
+
+// Start the sensor and load the DMP. Returns 0 on success (same as dmpInitialize()). 'found' says if it answered at all.
+uint8_t imuBegin(bool &found) {
+  mpu.initialize();
+  found = mpu.testConnection();
+  if (!found) return 1;
+  uint8_t st = mpu.dmpInitialize();
+  if (st == 0) {
+    mpu.setXGyroOffset(-234);
+    mpu.setYGyroOffset(24);
+    mpu.setZGyroOffset(-9);
+    mpu.setXAccelOffset(-698);
+    mpu.setYAccelOffset(476);
+    mpu.setZAccelOffset(2538);
+  }
+  return st;
+}
+
+// Called from the IMU task after repeated bus failures.
+void imuRecover() {
+  imuRecoveries++;
+  Wire.end();
+  // A device that was mid-transfer when the wire moved can hold SDA low forever. Clocking SCL up to 9 times lets it finish.
+  pinMode(SDA_PIN, INPUT_PULLUP);
+  pinMode(SCL_PIN, OUTPUT);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(SCL_PIN, LOW);
+    delayMicroseconds(5);
+    digitalWrite(SCL_PIN, HIGH);
+    delayMicroseconds(5);
+  }
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(I2C_CLOCK_HZ);
+  Wire.setTimeOut(IMU_I2C_TIMEOUT_MS);
+  bool found = false;
+  if (imuBegin(found) == 0) {  // the sensor may have power-cycled and lost the DMP, so load it again
+    mpu.setDMPEnabled(true);
+    mpu.resetFIFO();
+    imuWarm = 0;
+  }
+}
 
 void imuTask(void *arg) {
   Med3 mGx, mGy, mGz, mAx, mAy, mAz;
+  uint8_t imuFailStreak = 0;  // failed I2C transfers in a row
   if (otaInProgress == false) {
     for (;;) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
 
-      uint32_t rd0 = micros();
       uint32_t cn0 = micros();
-      uint16_t fc = mpu.getFIFOCount();  // diagnostic: separates "bus is slow" from "FIFO backed up"
+      uint16_t fc = 0;
+      bool countOk = imuReadFifoCount(fc);
       uint32_t cnUs = micros() - cn0;
       if (cnUs > imuCountMaxUs) imuCountMaxUs = cnUs;
+      if (!countOk) {  // sensor didn't answer: count it, and after a run of failures reset the bus and restart the IMU
+        imuI2cErrors++;
+        if (++imuFailStreak >= IMU_FAIL_LIMIT) {
+          imuRecover();
+          imuFailStreak = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+        continue;
+      }
       if (fc > imuFifoMax) imuFifoMax = fc;
-      if (fc >= 84) imuMultiPkt++;
-      rd0 = micros();
-      bool gotPacket = mpu.dmpGetCurrentFIFOPacket(fifoBuffer);  // after a FIFO overflow this busy-waits for the next packet
+      if (fc < IMU_PKT) {  // no complete packet yet
+        imuFailStreak = 0;
+        continue;
+      }
+      if (fc > 200) {  // FIFO overflowed: its contents can't be trusted, clear it and wait for fresh packets
+        imuOverflows++;
+        mpu.resetFIFO();
+        continue;
+      }
+      if (fc >= 2 * IMU_PKT) imuMultiPkt++;
+      uint32_t rd0 = micros();
+      bool gotPacket = true;
+      while (gotPacket && fc >= 2 * IMU_PKT) {  // several packets waiting: read and discard the old ones, keep the newest
+        gotPacket = imuReadFifo(fifoBuffer, IMU_PKT);
+        fc -= IMU_PKT;
+      }
+      if (gotPacket) gotPacket = imuReadFifo(fifoBuffer, IMU_PKT);
+      if (gotPacket) {
+        imuFailStreak = 0;
+      } else {
+        imuI2cErrors++;
+        if (++imuFailStreak >= IMU_FAIL_LIMIT) {
+          imuRecover();
+          imuFailStreak = 0;
+        }
+      }
       uint32_t rdUs = micros() - rd0;
       if (rdUs > imuReadMaxUs) imuReadMaxUs = rdUs;
       bool lateRead = rdUs > IMU_LATE_US;
@@ -949,6 +1062,7 @@ void imuTask(void *arg) {
         imuBadPackets++;
         if (lateRead) imuBadOnLate++;
         imuLastBadQn = qn;
+        mpu.resetFIFO();  // re-sync with the packet boundaries
         continue;
       }
 
@@ -972,6 +1086,7 @@ void imuTask(void *arg) {
       if (aa.x == 0 && aa.y == 0 && aa.z == 0) {
         imuBadPackets++;
         imuLastBadQn = qn;
+        mpu.resetFIFO();
         continue;
       }
 
@@ -997,7 +1112,8 @@ void imuTask(void *arg) {
       float ly = aa.y - gravity.y * DMP_ACCEL_LSB_PER_G;
       float lz = aa.z - gravity.z * DMP_ACCEL_LSB_PER_G;
       float g = sqrtf(lx * lx + ly * ly + lz * lz) / DMP_ACCEL_LSB_PER_G;
-      if (g > recMaxG) recMaxG = g;
+      if (imuWarm < IMU_WARMUP) imuWarm++;  // let the DMP settle after (re)start before recording
+      else if (g > recMaxG) recMaxG = g;
 
       yaw = abs(gy.z);
 
@@ -1297,7 +1413,12 @@ const char *resetReasonShort() {
     case ESP_RST_WDT: return "WDT";
     case ESP_RST_BROWNOUT: return "BROWN";
     case ESP_RST_DEEPSLEEP: return "SLEEP";
-    default: return "?";
+    default:
+      {  // any other reason (power glitch, USB, CPU lock-up, ...): show the raw number so it can be looked up
+        static char other[8];
+        snprintf(other, sizeof(other), "R%d", (int)esp_reset_reason());
+        return other;
+      }
   }
 }
 
@@ -1306,6 +1427,7 @@ void setup() {
   Serial.printf("Reset reason: %s\n", resetReasonShort());
 
   bootState = "GPIO init";
+  led(1, 1);
 
   gpio_config_t cfg = {};
   for (int i = 0; i < NUM_ESC; i++) {
@@ -1326,8 +1448,6 @@ void setup() {
 
   loadTune();  // restore saved tuning values first
 
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(I2C_CLOCK_HZ);
 
   Serial.println("ELRS 4.x receiver test");
 
@@ -1335,8 +1455,6 @@ void setup() {
   crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
   if (!crsfSerial) {
     Serial.println("Invalid crsfSerial configuration");
-    IMU_safe = 0;
-    delay(1000);
   }
 
   crsf.begin(crsfSerial);
@@ -1356,28 +1474,21 @@ void setup() {
   uint8_t devStatus = 1;
   bool mpuFound = false;
   for (int attempt = 1; attempt <= 5 && devStatus != 0; attempt++) {
-    mpu.initialize();
-    mpuFound = mpu.testConnection();
-    if (mpuFound) devStatus = mpu.dmpInitialize();
+    devStatus = imuBegin(mpuFound);  // also sets the calibration offsets
     if (devStatus != 0) {
       Serial.printf("IMU init attempt %d failed (found=%d, dmp code=%d)\n", attempt, (int)mpuFound, (int)devStatus);
       Wire.end();
       delay(100);
       Wire.begin(SDA_PIN, SCL_PIN);
       Wire.setClock(I2C_CLOCK_HZ);
+      Wire.setTimeOut(IMU_I2C_TIMEOUT_MS);
     }
   }
   if (!mpuFound) {
     Serial.println("MPU6050 not found - check wiring/address");
     IMU_safe = 0;
+    led(16, 1);
   }
-
-  mpu.setXGyroOffset(-234);
-  mpu.setYGyroOffset(24);
-  mpu.setZGyroOffset(-9);
-  mpu.setXAccelOffset(-698);
-  mpu.setYAccelOffset(476);
-  mpu.setZAccelOffset(2538);
 
   if (devStatus == 0) {
     mpu.setDMPEnabled(true);
@@ -1385,9 +1496,8 @@ void setup() {
     // Priorities: IMU highest, LEDs next. The WiFi driver tasks (~23) are built into the core and can
     // not be lowered, so the IMU sits above them and the LEDs level with them; AsyncTCP/web run below.
     xTaskCreatePinnedToCore(imuTask, "imu_0", 4096, nullptr, configMAX_PRIORITIES - 1, &imuTaskHandle, IMU_CORE);
-    xTaskCreatePinnedToCore(ledTask, "ledTask", 4096, NULL, configMAX_PRIORITIES - 2, NULL, 0);
 
-    pinMode(INT_PIN, INPUT);
+    pinMode(INT_PIN, INPUT_PULLDOWN);  // keep the pull-down: a floating INT wire picks up noise and floods the CPU with interrupts
     attachInterrupt(digitalPinToInterrupt(INT_PIN), dmpDataReady, RISING);
 
     dmpReady = true;
@@ -1396,6 +1506,12 @@ void setup() {
     Serial.printf("DMP init failed (code %d)\n", devStatus);
     IMU_safe = 0;
   }
+
+  // The LED task runs with or without an IMU, so the status LEDs (e.g. the purple "no IMU" blink) still work.
+  xTaskCreatePinnedToCore(ledTask, "ledTask", 4096, NULL, configMAX_PRIORITIES - 2, NULL, 0);
+
+
+
 
   bootState = "WiFi AP start";
   Serial.println("\nConfiguring Access Point...");
@@ -1497,6 +1613,13 @@ void setup() {
   }
 
   bootState = String("Ready (") + resetReasonShort() + ")";  // e.g. Ready (PANIC), Ready (BROWN), Ready (PWR)
+
+  led(1, 0);
+
+  led(2, 1);
+  // safe boot here
+  led(2, 0);
+
   modeString = "Running";
 }
 
@@ -1531,11 +1654,11 @@ void loop() {
     lastCleanupMs = millis();
     ws.cleanupClients();
     dbgMaxLoopGapUs = maxGapUs;
-    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk \ngap %.1fms json %.1fms esc %.1fms | ws %u\nimu read %.1fms late %u  cnt %.1fms\nfifo %u multi %u  bad %u (on late reads %u) last qn %.2f",
+    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk \ngap %.1fms json %.1fms esc %.1fms | ws %u\nimu read %.1fms late %u  cnt %.1fms\nfifo %u multi %u  bad %u (on late reads %u) last qn %.2f\nI2C err %u rec %u ovf %u",
              (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
              (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024),
              maxGapUs / 1000.0f, jsonMaxUs / 1000.0f, escMaxUs / 1000.0f, (unsigned)ws.count(),
-             imuReadMaxUs / 1000.0f, (unsigned)imuLateReads, imuCountMaxUs / 1000.0f, (unsigned)imuFifoMax, (unsigned)imuMultiPkt, (unsigned)imuBadPackets, (unsigned)imuBadOnLate, (float)imuLastBadQn);
+             imuReadMaxUs / 1000.0f, (unsigned)imuLateReads, imuCountMaxUs / 1000.0f, (unsigned)imuFifoMax, (unsigned)imuMultiPkt, (unsigned)imuBadPackets, (unsigned)imuBadOnLate, (float)imuLastBadQn, (unsigned)imuI2cErrors, (unsigned)imuRecoveries, (unsigned)imuOverflows);
     imuReadMaxUs = 0;
     imuCountMaxUs = 0;
     imuFifoMax = 0;
@@ -1633,5 +1756,5 @@ void loop() {
   // ----------------------------------------------------------------------
 
 
- vTaskDelay(pdMS_TO_TICKS(1));
+  vTaskDelay(pdMS_TO_TICKS(1));
 }

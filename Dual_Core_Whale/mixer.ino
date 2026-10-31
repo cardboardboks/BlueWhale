@@ -23,7 +23,7 @@ void mixer(float throttle, float steering) {
   // when auto up is off: all blinking purple/white (stabilisation not available)
   if (txchannel[4] == 2000 && txchannel[3] == 2000) {
     led(7, 1);
-    modeString = "No IMU";
+    modeString = "IMU Off";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
