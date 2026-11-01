@@ -14,6 +14,42 @@ IPAddress subnet(255, 255, 255, 0);
 const char *ssid = "Whale";
 const char *password = "Whale#1234";
 
+void web() {
+  // once a second, drop dead/stalled web clients so their queued messages don't pile up in RAM
+  static uint32_t lastCleanupMs = 0;
+  if (millis() - lastCleanupMs >= 1000) {
+    lastCleanupMs = millis();
+    ws.cleanupClients();
+    dbgMaxLoopGapUs = maxGapUs;
+    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk \ngap %.1fms json %.1fms esc %.1fms | ws %u\nimu read %.1fms late %u  cnt %.1fms\nfifo %u multi %u  bad %u (on late reads %u) last qn %.2f\nI2C err %u rec %u ovf %u",
+             (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024),
+             maxGapUs / 1000.0f, jsonMaxUs / 1000.0f, escMaxUs / 1000.0f, (unsigned)ws.count(),
+             imuReadMaxUs / 1000.0f, (unsigned)imuLateReads, imuCountMaxUs / 1000.0f, (unsigned)imuFifoMax, (unsigned)imuMultiPkt, (unsigned)imuBadPackets, (unsigned)imuBadOnLate, (float)imuLastBadQn, (unsigned)imuI2cErrors, (unsigned)imuRecoveries, (unsigned)imuOverflows);
+    imuReadMaxUs = 0;
+    imuCountMaxUs = 0;
+    imuFifoMax = 0;
+    maxGapUs = 0;
+    jsonMaxUs = 0;
+    escMaxUs = 0;
+  }
+
+  unsigned long now = millis();
+  if (now - lastUpdate >= WEB_UPDATE_MS) {
+    lastUpdate = now;
+
+    state();
+    if (!imuAlive()) imuOrient = 0;  // IMU dropout: blank the up/down arrow instead of showing a stale value
+
+    if (ws.count() > 0) {  // nobody watching -> don't build the JSON at all
+      uint32_t t0 = micros();
+      ws.textAll(getSerializedData());
+      uint32_t d = micros() - t0;
+      if (d > jsonMaxUs) jsonMaxUs = d;
+    }
+  }
+}
+
 // Scale dBm to 0-100 %
 int getSignalQuality(int dbm) {
   if (dbm == -127) return 0;

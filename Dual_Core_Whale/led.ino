@@ -112,7 +112,7 @@ void ledTask(void *pvParameters) {
 // 15 stabilisation on, drive backwards, bottom: blinking white
 
 void led(int array_num, bool on_off) {
-// move led commands into state array
+  // move led commands into state array
   modeArray[array_num] = on_off;
 }
 
@@ -157,4 +157,59 @@ void fade_led(int start, int count, int freq, uint32_t colorA, uint32_t colorB) 
   uint8_t g = (aG * (255 - mix) + bG * mix) / 255;
   uint8_t b = (aB * (255 - mix) + bB * mix) / 255;
   for (int i = start; i < start + count; i++) leds[i] = { r, g, b };
+}
+
+void showLeds() {
+  uint8_t *p = spiBuf;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    encodeByte(leds[i].g, p);
+    p += 4;
+    encodeByte(leds[i].r, p);
+    p += 4;
+    encodeByte(leds[i].b, p);
+    p += 4;
+  }
+  memset(p, 0, RESET_BYTES);
+
+  spi_transaction_t t = {};
+  t.length = sizeof(spiBuf) * 8;
+  t.tx_buffer = spiBuf;
+  spi_device_transmit(ledDev, &t);
+}
+
+struct RGB {
+  uint8_t r, g, b;
+};
+RGB leds[NUM_LEDS];
+
+static const uint8_t lut[4] = {
+  0b10001000,
+  0b10001110,
+  0b11101000,
+  0b11101110
+};
+
+void encodeByte(uint8_t v, uint8_t *out) {
+  out[0] = lut[(v >> 6) & 3];
+  out[1] = lut[(v >> 4) & 3];
+  out[2] = lut[(v >> 2) & 3];
+  out[3] = lut[v & 3];
+}
+
+void ledInit() {
+  spi_bus_config_t bus = {};
+  bus.mosi_io_num = LED_PIN;
+  bus.miso_io_num = -1;
+  bus.sclk_io_num = 12;
+  bus.quadwp_io_num = -1;
+  bus.quadhd_io_num = -1;
+  bus.max_transfer_sz = sizeof(spiBuf);
+  spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
+
+  spi_device_interface_config_t dev = {};
+  dev.clock_speed_hz = SPI_FREQ;
+  dev.mode = 0;
+  dev.spics_io_num = -1;
+  dev.queue_size = 1;
+  spi_bus_add_device(SPI3_HOST, &dev, &ledDev);
 }
