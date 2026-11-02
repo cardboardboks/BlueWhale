@@ -87,10 +87,10 @@ void resetRecords() {
 // Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
 #define NUM_TUNE 20
 const char *tuneName[NUM_TUNE] = {
-  "Tune Var 01", "Tune Var 02", "Tune Var 03", "Tune Var 04", "Tune Var 05",
-  "Tune Var 06", "Tune Var 07", "Tune Var 08", "Tune Var 09", "Tune Var 10",
-  "Tune Var 11", "Tune Var 12", "Tune Var 13", "Tune Var 14", "Tune Var 15",
-  "Tune Var 16", "Tune Var 17", "Tune Var 18", "Tune Var 19", "Tune Var 20"
+  "Name", "sysID", "SSID", "Password", "Blank",
+  "WiFi Power", "P", "I", "D", "Rate Yaw Max",
+  "Accl Yaw Max", "Tune Var 12", "Tune Var 13", "Tune Var 14", "Tune Var 15",
+  "Tune Var 16", "ESC1 Dir", "ESC2 Dir", "ESC3 Dir", "ESC4 Dir"
 };
 volatile float tuneVal[NUM_TUNE] = { 0 };
 
