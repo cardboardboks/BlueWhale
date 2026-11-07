@@ -82,6 +82,39 @@ void resetRecords() {
   recMaxSpd = 0;
 }
 
+// ---- Battery voltage from a resistor divider ----
+// The ESCs (AM32) only send voltage while the motors are running, so the battery is also measured here,
+// which works with the motors stopped. Wiring: battery + -> 150k -> VBAT_PIN -> 8.2k -> GND, 100nF across the 8.2k.
+// The pin can only take ~3.1 V. Max battery = 3.1 x (R_TOP + R_BOT) / R_BOT: 100k/10k -> 34 V (fine for 6S, NOT for 12S).
+#define VBAT_ENABLED 0        // 1 = divider fitted. 0 = ignore the pin and use the ESC voltages (leave at 0 while the pin is floating)
+#define VBAT_PIN 3            // must be an ADC1 pin (GPIO 1-10): ADC2 pins don't work while WiFi is on
+#define VBAT_R_TOP 100000.0f  // battery + -> pin (ohms)
+#define VBAT_R_BOT 10000.0f   // pin -> GND (ohms)
+#define VBAT_CAL 1.000f       // trim against a multimeter: CAL = meter reading / page reading
+#define VBAT_MIN_V 5.0f       // below this the reading is treated as "no battery / wire off" and the ESC voltages are used
+volatile float vbat = 0;      // battery volts (0 = no reading / divider not enabled)
+
+// true when the divider is enabled and reading a believable battery voltage
+bool vbatValid() {
+  return VBAT_ENABLED && vbat >= VBAT_MIN_V;
+}
+
+void vbatInit() {
+  if (!VBAT_ENABLED) return;
+  analogReadResolution(12);
+  analogSetPinAttenuation(VBAT_PIN, ADC_11db);  // ~0-3.1 V range
+}
+
+// Called from loop(); takes a reading every 20 ms
+void vbatUpdate() {
+  if (!VBAT_ENABLED) return;
+  static uint32_t last = 0;
+  if (millis() - last < 20) return;
+  last = millis();
+  float v = analogReadMilliVolts(VBAT_PIN) / 1000.0f * (VBAT_R_TOP + VBAT_R_BOT) / VBAT_R_BOT * VBAT_CAL;
+  vbat = (vbat == 0) ? v : vbat + 0.1f * (v - vbat);  // light smoothing
+}
+
 // ---- Whale Tuning ----
 // Rename them here. Use tuneVal[n] anywhere in your code; editing a box on the page changes it live.
 // Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
@@ -155,10 +188,10 @@ bool cpuMonitorOk = false;  // only true once init() succeeded; getLastSample() 
 #define PIN_TX 4
 
 // Must match DATA_TYPE / STATUS_TYPE / VERSION in /SCRIPTS/WHALE/whale_decode.lua
-#define CRSF_TYPE_VI_DATA    0x42
-#define CRSF_TYPE_VI_STATUS  0x43
-#define VI_PROTO_VERSION     3
-#define VI_MAX_STR           15
+#define CRSF_TYPE_VI_DATA 0x42
+#define CRSF_TYPE_VI_STATUS 0x43
+#define VI_PROTO_VERSION 3
+#define VI_MAX_STR 15
 
 #define SCL_PIN 6
 #define SDA_PIN 7
@@ -348,6 +381,8 @@ void setup() {
 
   pinMode(INT_PIN, INPUT_PULLDOWN);
 
+  vbatInit();  // battery voltage divider
+
   Serial.printf("Free stack: %d\n", uxTaskGetStackHighWaterMark(NULL));
 
   loadTune();  // restore saved tuning values first
@@ -492,6 +527,7 @@ void setup() {
 void loop() {
 
   update_reboot();
+  vbatUpdate();  // battery voltage divider
   crsf_rx();
   crsf_tx();
   status();

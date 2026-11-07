@@ -7,14 +7,6 @@ void drive_escs(int thr1, int thr2) {
   outChannel[0] = throttle1;
   outChannel[1] = throttle2;
 
-  // Re-try EDT enable on ESCs that aren't reporting (hot-plugged after boot)
-  // static uint32_t lastRedetect = 0;
-  // if (ESC_REDETECT_MS > 0 && millis() - lastRedetect > ESC_REDETECT_MS) {
-  //   lastRedetect = millis();
-  //   for (int i = 0; i < NUM_ESC; i++)
-  //     if (!escPresent(i)) escs[i].command(DSHOT_CMD_EDT_ENABLE);
-  // }
-
   if (txchannel[5] > 1800) {
     if (!timing) {
       timing = true;
