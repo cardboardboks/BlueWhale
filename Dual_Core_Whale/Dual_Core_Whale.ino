@@ -185,7 +185,10 @@ float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what
 #define ESC_REBOOT_CH 5
 #define ESC_REBOOT_US 1800
 #define ESC_REBOOT_HOLD_MS 1000
-#define ESC_CUT_MS 1000  // must be well over ESC_LOST_US
+#define ESC_CUT_MS 0  // 0 = don't cut the signal, just re-arm + re-enable EDT. A 1000 ms cut left AM32 not
+                      // responding for minutes on the bench - only try a cut again if testing shows it's needed.
+// The manual reboot is blind: it runs on timers only and hands control back at the end even if telemetry never
+// returns. After that, the automatic lost detection only re-engages once the ESC has been heard from again.
 
 // LEDs that belong to each ESC: they blink orange over the normal pattern while that ESC is lost / re-arming.
 // Assumes LEDs 0-5 are on the ESC1 (left) side and 6-11 on the ESC2 (right) side. Set a count to 0 for no LEDs.
@@ -208,6 +211,8 @@ volatile uint32_t escFramesSent[MAX_ESC] = { 0 };  // DShot frames sent since th
 volatile uint32_t escFramesGood[MAX_ESC] = { 0 };  // ...that got a telemetry reply
 uint32_t escLastSendUs[MAX_ESC] = { 0 };           // micros() at the start of the last send (0 = none yet)
 bool escMonitorOn = false;                         // switched on in setup() once the ESCs have booted
+bool escBlind[MAX_ESC] = { false };                // true during a manual (channel 5) reboot: ignore telemetry
+bool escHeard[MAX_ESC] = { false };                // telemetry seen since the ESC last went to OK
 
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
