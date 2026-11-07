@@ -93,6 +93,9 @@ th.off { opacity: .3; }
 .modal.show { display: flex; }
 button:disabled { opacity: .35; pointer-events: none; }
 .tv input:disabled { opacity: .45; }
+#c-cal { margin-top: 5px; }
+#c-cal .tfile { margin: 4px 0 0; }
+.sides span { margin-left: 6px; color: var(--muted); } .sides span.done { color: var(--good); font-weight: 600; }
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 14px); transform: translateX(-50%); z-index: 20;
          background: #1c1c1e; border: 1px solid var(--border); border-radius: 10px; padding: 6px 14px; font-size: 1rem;
          opacity: 0; pointer-events: none; transition: opacity .2s; white-space: nowrap; }
@@ -207,7 +210,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <div class="chs" id="ochs"></div>
     </div>
 
-    <div class="card" id="c-imu"><h2><span>IMU</span><span id="i-state"></span></h2>
+    <div class="card" id="c-imu"><h2><span>IMU <span id="i-state"></span></span><button class="nav" id="btn-level">Level</button></h2>
       <table class="num">
         <thead><tr><th></th><th>X</th><th>Y</th><th>Z</th></tr></thead>
         <tbody>
@@ -215,6 +218,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
           <tr><td class="l">Accel</td><td id="i-ax">--</td><td id="i-ay">--</td><td id="i-az">--</td></tr>
         </tbody>
       </table>
+      <div class="kv"><span>Tilt</span><span class="v" id="i-tilt">--</span></div>
       <div class="kv"><span>Max G</span><span class="v" id="v-rg">--</span></div>
       <div class="kv"><span>Orientation</span><span class="v" id="i-ud">--</span></div>
       <div class="kv"><span>Direction</span><span class="v" id="i-lr">--</span></div>
@@ -244,6 +248,18 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
     <input type="file" id="file-param" accept=".param,.txt,text/plain" hidden>
   </div>
   <div class="tgrid" id="tgrid"></div>
+  <div class="card" id="c-cal"><h2>IMU Calibration</h2>
+    <div class="kv"><span>Gyro + accel offsets</span><span class="v" id="cal-offs">--</span></div>
+    <div class="kv"><span>6-side accel</span><span class="v" id="cal-acal">--</span></div>
+    <div class="kv"><span>Sides captured</span><span class="v sides" id="cal-sides">--</span></div>
+    <div class="kv"><span>Status</span><span class="v" id="cal-msg">--</span></div>
+    <div class="tfile">
+      <button class="nav" id="btn-caloff">Calibrate offsets (flat)</button>
+      <button class="nav" id="btn-calside">Capture position</button>
+      <button class="reset" id="btn-calfac">Factory offsets</button>
+      <button class="reset" id="btn-calclr">Clear 6-side</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -361,7 +377,9 @@ function setLocked(l, rebootLocked) {
   if (rebootLocked && $('m-yes').textContent === 'Yes, reboot') $('modal').classList.remove('show');
   if (l === isLocked) return;
   isLocked = l;
-  $('btn-pload').disabled = l;                                   // tuning: locked whenever channel 3 is high
+  $('btn-pload').disabled = l;
+  $('btn-level').disabled = l;
+  ['btn-caloff','btn-calside','btn-calclr','btn-calfac'].forEach(b => { $(b).disabled = l; });                                  // level: locked with the tuning                                   // tuning: locked whenever channel 3 is high
   document.querySelectorAll('#tgrid input').forEach(i => { i.disabled = l; });
   if (l) toast(rebootLocked ? 'Armed - reboot and tuning locked' : 'Armed (link down) - tuning locked');
 }
@@ -376,7 +394,7 @@ function initWebSocket() {
 
 function onMessage(event) {
   const d = JSON.parse(event.data);
-  if (d.blocked) { toast(d.blocked === 'reboot' ? 'Armed - reboot blocked' : 'Armed - tuning locked'); return; }
+  if (d.blocked) { toast({ reboot: 'Armed - reboot blocked', level: 'Armed - level locked', cal: 'Armed - calibration locked', imu: 'No IMU - can\'t level' }[d.blocked] || 'Armed - tuning locked'); return; }
   if (d.armed !== undefined) setLocked(!!d.armed, !!d.noreboot);
   lastMsg = Date.now();
 
@@ -490,10 +508,19 @@ function onMessage(event) {
     // arrows you drive from the sketch: 1 / -1 / 0 (blank)
     // IMU dropout: show LOST in the heading and grey out the numbers until packets come back
     const imuOk = m.ok !== false;
-    set('i-state', imuOk ? "" : "LOST");
-    $('i-state').className = imuOk ? "" : "bad";
-    ['i-gx','i-gy','i-gz','i-ax','i-ay','i-az','v-rg'].forEach(id => $(id).classList.toggle('stale', !imuOk));
+    const lvl = m.lvl !== false;
+    set('i-state', !imuOk ? "LOST" : !lvl ? "NOT LEVELLED" : "");
+    $('i-state').className = !imuOk ? "bad" : !lvl ? "warn" : "";
+    ['i-gx','i-gy','i-gz','i-ax','i-ay','i-az','v-rg','i-tilt'].forEach(id => $(id).classList.toggle('stale', !imuOk));
     set('i-ud', m.ud > 0 ? "⬆️" : m.ud < 0 ? "⬇️" : "--");
+    if (m.cal) {
+      const c = m.cal;
+      set('cal-offs', c.offs ? "saved" : "factory");
+      set('cal-acal', c.acal ? "saved" + (c.rms !== undefined ? ` (±${(c.rms * 1000).toFixed(0)} mg)` : "") : "none");
+      $('cal-sides').innerHTML = ["X+","X-","Y+","Y-","Z+","Z-"].map((n, b) => `<span class="${(c.sides >> b) & 1 ? 'done' : ''}">${n}</span>`).join("") + ` <span>(${c.n || 0})</span>`;
+      set('cal-msg', c.busy ? "working..." : (c.msg || "--"));
+    }
+    set('i-tilt', m.tilt === undefined ? '--' : f(m.tilt, 0) + ' °');
     set('i-lr', m.lr > 0 ? "➡️" : m.lr < 0 ? "⬅️" : "--");
   }
 
@@ -519,6 +546,11 @@ function ask(detail, yesLabel, action) {
 }
 $('btn-reset').onclick = () => ask('All records (Max G, Max ESC Temp, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
 $('btn-reboot').onclick = () => ask('The board will restart. Motors lose their signal and the page reconnects in a few seconds.', 'Yes, reboot', () => wsSend('reboot'));
+$('btn-level').onclick = () => ask('Sit the robot flat and the right way up, and keep it still. Its current position becomes upright, and up/down flips at 90 degrees from it.', 'Yes, level', () => { wsSend('level'); toast('Levelled'); });
+$('btn-caloff').onclick = () => ask('Put the IMU board flat with the chip facing up and keep everything perfectly still for a few seconds. The IMU stops reporting while it runs. Clears the 6-side calibration and the Level.', 'Yes, calibrate', () => wsSend('cal_off'));
+$('btn-calside').onclick = () => wsSend('cal_side');   // rest the robot on a side, keep still ~1 s
+$('btn-calfac').onclick = () => ask('Forget the saved gyro + accel offsets and go back to the chip\'s own. The IMU restarts. Clears the 6-side calibration and the Level.', 'Yes, factory', () => wsSend('cal_fac'));
+$('btn-calclr').onclick = () => ask('Forget the 6-side accel calibration (and the Level, which depends on it).', 'Yes, clear', () => wsSend('cal_clr'));
 $('m-no').onclick = () => modal.classList.remove('show');
 modal.onclick = e => { if (e.target === modal) modal.classList.remove('show'); };
 $('m-yes').onclick = () => {

@@ -169,6 +169,16 @@ String getSerializedData() {
   imu["ax"] = (int)imuAx;
   imu["ay"] = (int)imuAy;
   imu["az"] = (int)imuAz;
+  if (imuLevelled) imu["tilt"] = (float)imuTiltDeg;  // degrees from the levelled upright (left out until levelled)
+  imu["lvl"] = (bool)imuLevelled;
+  JsonObject cal = imu["cal"].to<JsonObject>();  // calibration status for the Tuning page
+  cal["offs"] = (bool)imuOffsValid;
+  cal["acal"] = (bool)accCalValid;
+  cal["sides"] = (int)sideMask;
+  cal["n"] = (int)calN;
+  if (accCalValid) cal["rms"] = (float)accCalRms;
+  cal["busy"] = imuCalOffReq || imuCalSideReq || imuCalFactoryReq;
+  cal["msg"] = (const char *)imuCalMsg;                     // false = never levelled: the page shows NOT LEVELLED
   imu["ud"] = (int)imuOrient;     // up/down arrow
   imu["lr"] = (int)imuDirection;  // left/right arrow
   imu["ok"] = imuAlive();         // false = IMU dropout (no good packet lately); the page shows LOST and greys the numbers
@@ -202,6 +212,21 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
       if (len == 5 && memcmp(data, "reset", 5) == 0) resetRecords();
+      // IMU calibration buttons (Tuning page): locked while armed, and need a working IMU
+      else if (len >= 7 && memcmp(data, "cal_", 4) == 0) {
+        if (armSwitchHigh()) client->text("{\"blocked\":\"cal\"}");
+        else if (len == 7 && memcmp(data, "cal_clr", 7) == 0) imuCalClearReq = true;
+        else if (!imuAlive()) client->text("{\"blocked\":\"imu\"}");
+        else if (len == 7 && memcmp(data, "cal_off", 7) == 0) imuCalOffReq = true;
+        else if (len == 7 && memcmp(data, "cal_fac", 7) == 0) imuCalFactoryReq = true;
+        else if (len == 8 && memcmp(data, "cal_side", 8) == 0) imuCalSideReq = true;
+      }
+      // "Level" button: robot sitting flat and right way up -> that becomes the IMU's upright direction
+      else if (len == 5 && memcmp(data, "level", 5) == 0) {
+        if (armSwitchHigh()) client->text("{\"blocked\":\"level\"}");
+        else if (!imuAlive()) client->text("{\"blocked\":\"imu\"}");
+        else imuLevelReq = true;
+      }
       else if (len == 6 && memcmp(data, "reboot", 6) == 0) {
         if (rebootBlocked()) {
           client->text("{\"blocked\":\"reboot\"}");  // armed: refuse, and tell the page

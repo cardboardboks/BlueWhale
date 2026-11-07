@@ -24,13 +24,13 @@ uint8_t imuBegin(bool &found) {
   found = mpu.testConnection();
   if (!found) return 1;
   uint8_t st = mpu.dmpInitialize();
-  if (st == 0) {
-    mpu.setXGyroOffset(-234);
-    mpu.setYGyroOffset(24);
-    mpu.setZGyroOffset(-9);
-    mpu.setXAccelOffset(-698);
-    mpu.setYAccelOffset(476);
-    mpu.setZAccelOffset(2538);
+  if (st == 0 && imuOffsValid) {  // calibrated offsets (Tuning page); otherwise the chip's factory values stay
+    mpu.setXAccelOffset(imuOffs[0]);
+    mpu.setYAccelOffset(imuOffs[1]);
+    mpu.setZAccelOffset(imuOffs[2]);
+    mpu.setXGyroOffset(imuOffs[3]);
+    mpu.setYGyroOffset(imuOffs[4]);
+    mpu.setZGyroOffset(imuOffs[5]);
   }
   return st;
 }
@@ -65,6 +65,68 @@ void imuTask(void *arg) {
   if (otaInProgress == false) {
     for (;;) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+
+      // ---- calibration requests from the Tuning page (run here: this task owns the I2C bus) ----
+      if (imuCalOffReq) {  // flat offset calibration: blocks this task for a few seconds
+        imuCalOffReq = false;
+        imuCalMsg = "Calibrating offsets - keep still";
+        mpu.setDMPEnabled(false);
+        mpu.CalibrateAccel(6);
+        mpu.CalibrateGyro(6);
+        imuOffs[0] = mpu.getXAccelOffset();
+        imuOffs[1] = mpu.getYAccelOffset();
+        imuOffs[2] = mpu.getZAccelOffset();
+        imuOffs[3] = mpu.getXGyroOffset();
+        imuOffs[4] = mpu.getYGyroOffset();
+        imuOffs[5] = mpu.getZGyroOffset();
+        mpu.setDMPEnabled(true);
+        mpu.resetFIFO();
+        imuWarm = 0;
+        imuFailStreak = 0;
+        imuOffsValid = true;
+        imuOffSave = true;
+        for (int k = 0; k < 3; k++) {  // the old 6-side data was taken with the old offsets: start that again
+          accOff[k] = 0;
+          accScale[k] = DMP_ACCEL_LSB_PER_G;
+        }
+        accCalValid = false;
+        sideMask = 0;
+        calN = 0;
+        accCalSave = true;
+        imuLevelled = false;  // and the level
+        imuCalMsg = "Offsets saved - redo 6-side (optional), then Level";
+        continue;
+      }
+      if (imuCalFactoryReq) {  // back to the chip's own offsets: restarting the IMU resets them
+        imuCalFactoryReq = false;
+        imuOffsValid = false;
+        bool found = false;
+        if (imuBegin(found) == 0) {
+          mpu.setDMPEnabled(true);
+          mpu.resetFIFO();
+        }
+        imuWarm = 0;
+        imuFailStreak = 0;
+        imuOffSave = true;      // removes the saved offsets
+        imuCalClearReq = true;  // 6-side and level were taken with the old offsets
+        imuLevelled = false;
+        imuCalFactoryMsg = true;
+        continue;
+      }
+      if (imuCalClearReq) {
+        imuCalClearReq = false;
+        for (int k = 0; k < 3; k++) {
+          accOff[k] = 0;
+          accScale[k] = DMP_ACCEL_LSB_PER_G;
+        }
+        if (accCalValid) imuLevelled = false;  // accel readings change, so the level does too
+        accCalValid = false;
+        sideMask = 0;
+        calN = 0;
+        accCalSave = true;  // removes the saved 6-side data
+        imuCalMsg = imuCalFactoryMsg ? "Factory offsets - redo 6-side, then Level" : "6-side cleared";
+        imuCalFactoryMsg = false;
+      }
 
       uint32_t cn0 = micros();
       uint16_t fc = 0;
@@ -167,24 +229,79 @@ void imuTask(void *arg) {
       imuAy = aa.y;
       imuAz = aa.z;
 
-      // Up/down: the DMP gravity vector is +1 on whichever sensor axis currently points up. Inside the dead band
-      // (+/- imuOrientHyst) the previous state is kept, so it can't flicker while the robot passes through sideways.
+      // 6-side calibration: average ~1 s of still readings per position, then fit offsets/scales to all positions
       {
-        float up = (imuUpAxis == 0) ? gravity.x : (imuUpAxis == 1) ? gravity.y
-                                                                   : gravity.z;
-        if (imuUpInverted) up = -up;
-        if (up > imuOrientHyst) imuOrient = 1;
-        else if (up < -imuOrientHyst) imuOrient = -1;
+        static uint16_t sideN = 0;
+        static float sideSum[3], sideSq[3];
+        if (imuCalSideReq) {
+          if (sideN == 0) {
+            for (int j = 0; j < 3; j++) sideSum[j] = sideSq[j] = 0;
+            imuCalMsg = "Capturing - keep still";
+          }
+          float v[3] = { (float)aa.x / DMP_ACCEL_LSB_PER_G, (float)aa.y / DMP_ACCEL_LSB_PER_G, (float)aa.z / DMP_ACCEL_LSB_PER_G };
+          for (int j = 0; j < 3; j++) {
+            sideSum[j] += v[j];
+            sideSq[j] += v[j] * v[j];
+          }
+          if (++sideN >= CAL_SIDE_SAMPLES) {
+            calAddPoint(sideSum, sideSq, sideN);
+            imuCalSideReq = false;
+            sideN = 0;
+          }
+        } else {
+          sideN = 0;
+        }
+      }
+
+      // accel in g, corrected by the 6-side calibration (plain counts / 16384 until there is one)
+      float ac[3] = { (aa.x - accOff[0]) / accScale[0], (aa.y - accOff[1]) / accScale[1], (aa.z - accOff[2]) / accScale[2] };
+
+      // Up/down: measured along imuRef, the upright direction saved with the web page's Level button. Inside the
+      // dead band (+/- imuOrientHyst) the previous state is kept, so it can't flicker while passing through sideways.
+      // Not levelled yet: no up/down at all (arrow blank, robot treated as upright, same as a missing IMU).
+      {
+        // accelerometer gravity: low-pass the corrected accel (in g), then use its direction
+        static float fa[3];
+        static bool faPrimed = false;
+        for (int k = 0; k < 3; k++) fa[k] = faPrimed ? fa[k] + IMU_ACC_LP * (ac[k] - fa[k]) : ac[k];
+        faPrimed = true;
+        float an = sqrtf(fa[0] * fa[0] + fa[1] * fa[1] + fa[2] * fa[2]);
+        float gn = sqrtf(gravity.x * gravity.x + gravity.y * gravity.y + gravity.z * gravity.z);
+
+        if (imuLevelReq) {  // Level pressed: the current gravity direction (both sources) becomes "upright"
+          if (gn > 0.5f && an > 0.5f) {
+            imuRef[0] = gravity.x / gn;
+            imuRef[1] = gravity.y / gn;
+            imuRef[2] = gravity.z / gn;
+            for (int k = 0; k < 3; k++) imuRefA[k] = fa[k] / an;
+            imuLevelled = true;
+            imuLevelSave = true;
+          }
+          imuLevelReq = false;
+        }
+        if (imuLevelled && gn > 0.5f && an > 0.5f) {
+          float upD = (gravity.x * imuRef[0] + gravity.y * imuRef[1] + gravity.z * imuRef[2]) / gn;  // cos(tilt), DMP
+          float upA = (fa[0] * imuRefA[0] + fa[1] * imuRefA[1] + fa[2] * imuRefA[2]) / an;          // cos(tilt), accel
+          imuTiltDmpDeg = acosf(constrain(upD, -1.0f, 1.0f)) * 180.0f / (float)M_PI;
+          imuTiltAccDeg = acosf(constrain(upA, -1.0f, 1.0f)) * 180.0f / (float)M_PI;
+          float up = IMU_UP_FROM_ACCEL ? upA : upD;
+          imuTiltDeg = IMU_UP_FROM_ACCEL ? imuTiltAccDeg : imuTiltDmpDeg;
+          if (up > imuOrientHyst) imuOrient = 1;
+          else if (up < -imuOrientHyst) imuOrient = -1;
+        } else if (!imuLevelled) {
+          imuTiltDeg = imuTiltDmpDeg = imuTiltAccDeg = 0;
+          imuOrient = 0;
+        }
       }
 
 
       // Remove gravity using the DMP orientation. Done by hand (not dmpGetLinearAccel) because that
       // library function assumes 8192 counts/g, which doesn't match the 16384 this sensor is giving.
-      // 'gravity' is a unit vector (computed above from the quaternion), so scale it to counts first.
-      float lx = aa.x - gravity.x * DMP_ACCEL_LSB_PER_G;
-      float ly = aa.y - gravity.y * DMP_ACCEL_LSB_PER_G;
-      float lz = aa.z - gravity.z * DMP_ACCEL_LSB_PER_G;
-      float g = sqrtf(lx * lx + ly * ly + lz * lz) / DMP_ACCEL_LSB_PER_G;
+      // 'gravity' is a unit vector (computed above from the quaternion); ac is the corrected accel in g.
+      float lx = ac[0] - gravity.x;
+      float ly = ac[1] - gravity.y;
+      float lz = ac[2] - gravity.z;
+      float g = sqrtf(lx * lx + ly * ly + lz * lz);
       if (imuWarm < IMU_WARMUP) imuWarm++;  // let the DMP settle after (re)start before recording
       else if (g > recMaxG) recMaxG = g;
 
@@ -199,4 +316,150 @@ void imuTask(void *arg) {
       Y = (y > 1400) ? 1400 : y;
     }
   }
+}
+// ---------------- 6-side accel calibration (sphere fit) ----------------
+// Each capture is the average accel (in g, offsets from the chip already applied) over ~1 s with the robot still.
+// The fit finds a zero point and a scale per axis so that every capture comes out at exactly 1 g. It doesn't need
+// the IMU to be square to the robot: any positions work, as long as each axis has been both up and down.
+
+// Solve the 6x6 system A x = b in place (Gaussian elimination with partial pivoting). false = singular.
+static bool solve6(float A[6][6], float b[6], float x[6]) {
+  for (int c = 0; c < 6; c++) {
+    int piv = c;
+    for (int r = c + 1; r < 6; r++)
+      if (fabsf(A[r][c]) > fabsf(A[piv][c])) piv = r;
+    if (fabsf(A[piv][c]) < 1e-9f) return false;
+    if (piv != c) {
+      for (int k = 0; k < 6; k++) {
+        float t = A[c][k];
+        A[c][k] = A[piv][k];
+        A[piv][k] = t;
+      }
+      float t = b[c];
+      b[c] = b[piv];
+      b[piv] = t;
+    }
+    for (int r = c + 1; r < 6; r++) {
+      float f = A[r][c] / A[c][c];
+      for (int k = c; k < 6; k++) A[r][k] -= f * A[c][k];
+      b[r] -= f * b[c];
+    }
+  }
+  for (int r = 5; r >= 0; r--) {
+    float s = b[r];
+    for (int k = r + 1; k < 6; k++) s -= A[r][k] * x[k];
+    x[r] = s / A[r][r];
+  }
+  return true;
+}
+
+// Fit offset o[3] and scale s[3] (both in g units) to the captured points. Returns the rms error in g, or -1 on failure.
+static float calFit(float o[3], float sc[3]) {
+  // start from the midpoint and half-span of each axis
+  for (int k = 0; k < 3; k++) {
+    float mn = calPts[0][k], mx = calPts[0][k];
+    for (int i = 1; i < calN; i++) {
+      mn = min(mn, calPts[i][k]);
+      mx = max(mx, calPts[i][k]);
+    }
+    o[k] = (mx + mn) * 0.5f;
+    sc[k] = max((mx - mn) * 0.5f, 0.2f);
+  }
+  float rms = -1;
+  for (int it = 0; it < 30; it++) {  // Gauss-Newton on r_i = |(a_i - o) / s|^2 - 1
+    float JtJ[6][6] = { { 0 } }, Jtr[6] = { 0 }, dx[6];
+    float sse = 0;
+    for (int i = 0; i < calN; i++) {
+      float J[6], r = -1;
+      for (int k = 0; k < 3; k++) {
+        float d = calPts[i][k] - o[k];
+        r += (d * d) / (sc[k] * sc[k]);
+        J[k] = -2.0f * d / (sc[k] * sc[k]);
+        J[3 + k] = -2.0f * d * d / (sc[k] * sc[k] * sc[k]);
+      }
+      sse += r * r;
+      for (int m = 0; m < 6; m++) {
+        Jtr[m] += J[m] * r;
+        for (int n = 0; n < 6; n++) JtJ[m][n] += J[m] * J[n];
+      }
+    }
+    rms = sqrtf(sse / calN) * 0.5f;  // |v|^2 - 1 is about 2x the error in |v|
+    for (int m = 0; m < 6; m++) JtJ[m][m] *= 1.001f;  // a touch of damping
+    if (!solve6(JtJ, Jtr, dx)) return -1;
+    float step = 0;
+    for (int k = 0; k < 3; k++) {
+      o[k] -= dx[k];
+      sc[k] -= dx[3 + k];
+      if (!(sc[k] > 0.1f)) return -1;
+      step += dx[k] * dx[k] + dx[3 + k] * dx[3 + k];
+    }
+    if (step < 1e-10f) break;
+  }
+  return rms;
+}
+
+// One capture finished (sums over n packets, in g). Checks it, stores it, and fits once every axis has been up and down.
+void calAddPoint(const float sum[3], const float sq[3], uint16_t n) {
+  float avg[3], mag = 0, noise = 0;
+  for (int j = 0; j < 3; j++) {
+    avg[j] = sum[j] / n;
+    noise = max(noise, sqrtf(max(sq[j] / n - avg[j] * avg[j], 0.0f)));
+    mag += avg[j] * avg[j];
+  }
+  mag = sqrtf(mag);
+  static char msg[64];
+  if (noise > CAL_MAX_NOISE_G) {
+    snprintf(msg, sizeof(msg), "Moved during capture (%.3f g) - try again", noise);
+    imuCalMsg = msg;
+    return;
+  }
+  // Only reject readings that are clearly broken. Offset errors can put a still reading anywhere from ~0 to ~2.5 g,
+  // and the fit corrects that, so the size isn't checked against 1 g.
+  if (mag < 0.15f || mag > 3.5f) {
+    snprintf(msg, sizeof(msg), "Reading %.2f g - IMU fault? Try Factory offsets", mag);
+    imuCalMsg = msg;
+    return;
+  }
+  for (int i = 0; i < calN; i++) {  // too close to a position already captured adds nothing
+    float d = 0;
+    for (int j = 0; j < 3; j++) d += (avg[j] - calPts[i][j]) * (avg[j] - calPts[i][j]);
+    if (sqrtf(d) < CAL_MIN_SPACING_G) {
+      imuCalMsg = "Same position as before - turn it to another side";
+      return;
+    }
+  }
+  if (calN >= CAL_MAX_POINTS) {
+    imuCalMsg = "Already have the maximum - Clear to start again";
+    return;
+  }
+  for (int j = 0; j < 3; j++) calPts[calN][j] = avg[j];
+  calN++;
+  int k = 0;  // label the capture by the axis closest to vertical
+  for (int j = 1; j < 3; j++)
+    if (fabsf(avg[j]) > fabsf(avg[k])) k = j;
+  sideMask |= 1 << (k * 2 + (avg[k] < 0 ? 1 : 0));
+
+  if (sideMask != 0x3F || calN < 6) {
+    snprintf(msg, sizeof(msg), "Captured %.2f g - next side", mag);
+    imuCalMsg = msg;
+    return;
+  }
+  float o[3], sc[3];
+  float rms = calFit(o, sc);
+  bool ok = rms >= 0 && rms < CAL_MAX_RMS_G;
+  for (int j = 0; j < 3; j++)
+    if (!(sc[j] > 0.25f && sc[j] < 4.0f) || !(fabsf(o[j]) < 2.5f)) ok = false;
+  if (!ok) {
+    imuCalMsg = (rms < 0) ? "Fit failed - Clear and start again" : "Fit poor - capture more sides or Clear";
+    return;
+  }
+  for (int j = 0; j < 3; j++) {  // store in counts, the units the correction is applied in
+    accOff[j] = o[j] * DMP_ACCEL_LSB_PER_G;
+    accScale[j] = sc[j] * DMP_ACCEL_LSB_PER_G;
+  }
+  accCalRms = rms;
+  accCalValid = true;
+  accCalSave = true;
+  imuLevelled = false;
+  imuCalMsg = "6-side saved - now Level (more captures refine it)";
 }
