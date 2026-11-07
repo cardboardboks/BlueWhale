@@ -16,6 +16,7 @@ void pre_arm_safe() {
       // drve the crital functions to be able to chceck health
       // force esc's to disarmed
       crsf_rx();
+      crsf_tx();  // keep telemetry going while waiting in the safe check
       drive_escs(0, 0);
       status();
       web();
