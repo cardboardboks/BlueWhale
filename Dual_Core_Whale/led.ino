@@ -1,13 +1,14 @@
 void ledTask(void *pvParameters) {
-  ledInit();
+
   TickType_t lastWake = xTaskGetTickCount();
 
   for (;;) {
 
+    // ---- Priority 0: updating (overrides everything) ----
     if (otaInProgress) {
-      static_led(0, 12, 0xFF0000);
+      fade_led(0, 12, 2, 0xFFFFFF, 0x000000);
 
-      // ---- Priority 1: RC failsafe (overrides everything) ----
+      // ---- Priority 1: RC failsafe (overrides everything but an update) ----
     } else if (modeArray[4] == 1) {
       fade_led(0, 12, 1, 0xFF0000, 0x000000);
 
@@ -111,11 +112,22 @@ void ledTask(void *pvParameters) {
 // 14 stabilisation on, drive forward, bottom: slow blink white
 // 15 stabilisation on, drive backwards, bottom: blinking white
 
+struct RGB {
+  uint8_t r, g, b;
+};
+RGB leds[NUM_LEDS];
+
+static const uint8_t lut[4] = {
+  0b10001000,
+  0b10001110,
+  0b11101000,
+  0b11101110
+};
+
 void led(int array_num, bool on_off) {
   // move led commands into state array
   modeArray[array_num] = on_off;
 }
-
 
 void rainbow_led(int start, int count, int freq) {
 
@@ -176,18 +188,6 @@ void showLeds() {
   t.tx_buffer = spiBuf;
   spi_device_transmit(ledDev, &t);
 }
-
-struct RGB {
-  uint8_t r, g, b;
-};
-RGB leds[NUM_LEDS];
-
-static const uint8_t lut[4] = {
-  0b10001000,
-  0b10001110,
-  0b11101000,
-  0b11101110
-};
 
 void encodeByte(uint8_t v, uint8_t *out) {
   out[0] = lut[(v >> 6) & 3];

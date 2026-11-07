@@ -143,7 +143,7 @@ unsigned long lastUpdate = 0;
 // ESC signal pins, in web-page order (ESC 1..4).
 // ESC 1 = GPIO 2 and ESC 2 = GPIO 1, matching your original (swapped) begin() calls.
 // ESC 3 and ESC 4 pins are a guess - change them to wherever you wire them.
-const int ESC_PINS[MAX_ESC] = { 2, 1, 9, 10 };
+const int ESC_PINS[MAX_ESC] = { 2, 1, 16, 15 };
 const uint8_t MOTOR_POLES = 14;
 
 AlfredoDShot escs[NUM_ESC];
@@ -308,8 +308,21 @@ bool rebootBlocked() {
 }
 
 void setup() {
-  Serial.begin(115200);  // started first so the prints below work
+  Serial.begin(115200);
   Serial.printf("Reset reason: %s\n", resetReasonShort());
+
+  Serial.println("ELRS 4.x receiver starting");
+
+  bootState = "Receiver init";
+  crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
+  if (!crsfSerial) {
+    Serial.println("Invalid crsfSerial configuration");
+  }
+
+  crsf.begin(crsfSerial);
+  crsf.setDeviceName("AlfredoCRSF");
+
+  ledInit();
 
   bootState = "GPIO init";
   led(1, 1);
@@ -336,17 +349,6 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(I2C_CLOCK_HZ);
   Wire.setTimeOut(IMU_I2C_TIMEOUT_MS);
-
-  Serial.println("ELRS 4.x receiver test");
-
-  bootState = "Receiver init";
-  crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
-  if (!crsfSerial) {
-    Serial.println("Invalid crsfSerial configuration");
-  }
-
-  crsf.begin(crsfSerial);
-  crsf.setDeviceName("AlfredoCRSF");
 
   for (int i = 0; i < RPnumReadings; i++) RPreadings[i] = 0;
   for (int i = 0; i < YnumReadings; i++) Yreadings[i] = 0;
@@ -478,37 +480,19 @@ void setup() {
 
   pre_arm_safe();
 
-  modeString = "Running";
+  bootState = "Running";
 }
 
 void loop() {
 
-  ArduinoOTA.handle();
-
-  if (rebootPending && rebootBlocked()) {  // armed during the 0.5 s countdown: cancel the reboot
-    rebootPending = false;
-    modeString = "Running";
-  }
-  if (rebootPending && millis() > rebootAtMs) {
-    if (tuneDirty) saveTune();  // don't lose a tuning edit made in the last 2 seconds
-    Serial.println("Rebooting...");
-    ESP.restart();
-  }
-
-  if (otaInProgress) {
-    return;
-  }
-
+  update_reboot();
+  crsf_rx();
+  crsf_tx();
   status();
   web();
   mixer(txchannel[1], txchannel[2]);
   drive_escs(drive1_pwm, drive2_pwm);
   updateRecords();  // max/min records, checked on every pass so short peaks aren't missed
-
-  if (tuneDirty && millis() - tuneChangedMs > TUNE_SAVE_DELAY_MS) {
-    tuneDirty = false;
-    saveTune();
-  }
 
   vTaskDelay(pdMS_TO_TICKS(1));
 }

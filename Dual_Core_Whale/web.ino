@@ -264,7 +264,7 @@ void webBegin() {
     Serial.println("Failed to configure AP IP address");
   }
   WiFi.softAP(ssid, password);
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
