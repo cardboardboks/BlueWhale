@@ -89,6 +89,10 @@ void drive_escs(int thr1, int thr2) {
   if (NUM_ESC > 1) thr2 = escMonitorUpdate(1, thr2);
   for (int i = 2; i < NUM_ESC; i++) escMonitorUpdate(i, 0);
 
+  // ESC Dir boxes: reverse a motor in software (1000..2000 mirrored about 1500; 0 = disarm stays 0)
+  if (NUM_ESC > 0 && tuneVal[T_ESC_DIR + 0] >= 0.5f && thr1 != 0) thr1 = 3000 - thr1;
+  if (NUM_ESC > 1 && tuneVal[T_ESC_DIR + 1] >= 0.5f && thr2 != 0) thr2 = 3000 - thr2;
+
   //scale 1000-2000 range to dshot 3d mode lower and upper halves. if throttle centred send esc disarm command
   if (thr1 == 0) {
     thr1 = 0;

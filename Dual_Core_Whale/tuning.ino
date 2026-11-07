@@ -86,11 +86,19 @@ void saveAccCal() {
 
 void loadTune() {
   float tmp[NUM_TUNE];
+  for (int i = 0; i < NUM_TUNE; i++) tuneVal[i] = tuneDefault[i];  // anything never saved keeps its default
   prefs.begin("whale", true);  // read-only
   size_t n = prefs.getBytesLength("tune");
-  if (n == sizeof(tmp)) {  // only trust it if the size matches (changing NUM_TUNE falls back to defaults)
-    prefs.getBytes("tune", tmp, sizeof(tmp));
-    for (int i = 0; i < NUM_TUNE; i++) tuneVal[i] = tmp[i];
+  size_t k = n / sizeof(float);
+  if (n % sizeof(float) == 0 && k >= 1 && k <= NUM_TUNE) {  // a save from a shorter list loads what it has
+    prefs.getBytes("tune", tmp, n);
+    for (size_t i = 0; i < k; i++)
+      if (isfinite(tmp[i])) tuneVal[i] = tmp[i];
+    if (k == 20) {  // the old 20-box layout: boxes 11-15 were unused placeholders, and 6-10 may be blank
+      for (int i = 11; i <= 15; i++) tuneVal[i] = tuneDefault[i];
+      for (int i = 6; i <= 10; i++)
+        if (tmp[i] == 0) tuneVal[i] = tuneDefault[i];
+    }
   }
   for (int i = 0; i < NUM_TUNE_STR; i++) {
     char key[8], txt[TUNE_STR_LEN] = "";

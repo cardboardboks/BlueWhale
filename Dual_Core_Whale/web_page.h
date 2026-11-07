@@ -78,10 +78,33 @@ th.off { opacity: .3; }
 .tgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .tv { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 4px 8px; }
 .tv label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tv input { width: 5.5em; min-width: 0; font: inherit; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; text-align: right;
+.tv input { width: 4.4em; flex: none; min-width: 0; font: inherit; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; text-align: right;
             color: #fff; background: rgba(255,255,255,.08); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
-.tv input:focus { outline: none; border-color: var(--accent); }
-.tv.str label { flex: none; max-width: 45%; }
+.tv input:focus, .tv select:focus { outline: none; border-color: var(--accent); }
+.tv select { width: auto; max-width: 8em; flex: none; min-width: 0; font: inherit; color: #fff; background: #2c2c2e; border: 1px solid var(--border);
+             border-radius: 6px; padding: 2px 4px; }
+.tv select:disabled { opacity: .45; }
+#page-guide { max-width: 760px; align-self: stretch; margin: 0 auto; }
+#page-guide .card { padding: 10px 14px 12px; margin-bottom: 8px; }
+#page-guide h3 { font-size: 1.15rem; margin: 2px 0 6px; }
+#page-guide p, #page-guide li { font-size: 1.05rem; line-height: 1.5; color: var(--val); }
+#page-guide p + p { margin-top: 6px; }
+#page-guide ol, #page-guide ul { padding-left: 1.4em; }
+#page-guide li + li { margin-top: 6px; }
+#page-guide b { color: #fff; }
+#page-guide table { margin-top: 4px; }
+#page-guide td, #page-guide th { text-align: left; padding: 4px 6px 4px 0; font-size: 1rem; vertical-align: top; color: var(--val); }
+#page-guide th { color: var(--muted); }
+#page-guide code { font-family: ui-monospace, Menlo, monospace; font-size: .95em; color: #fff; }
+
+.tv .lab { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.tv.str .lab { flex: none; max-width: 50%; }
+.tv .lab label { min-width: 0; flex: 0 1 auto; }
+.q { flex: none; font: inherit; font-size: .8rem; line-height: 1; width: 1.35em; height: 1.35em; border-radius: 50%; padding: 0;
+     border: 1px solid rgba(10,132,255,.5); background: rgba(10,132,255,.18); color: #64b0ff; }
+.mbox.help { text-align: left; width: min(380px, 90vw); }
+.mbox.help p { font-weight: 600; margin-bottom: 8px; }
+.mbox.help div { color: var(--val); font-size: 1rem; line-height: 1.4; margin-bottom: 12px; white-space: pre-wrap; }
 .tv.str input { flex: 1; width: auto; text-align: left; }   /* text variables: use the whole box, left aligned */
 /* hide the up/down spinner arrows on number boxes (desktop browsers) */
 .tv input::-webkit-outer-spin-button, .tv input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -94,6 +117,8 @@ th.off { opacity: .3; }
 button:disabled { opacity: .35; pointer-events: none; }
 .tv input:disabled { opacity: .45; }
 #c-cal { margin-top: 5px; }
+.tsec + .tsec { margin-top: 12px; }
+.tsec > h3 { font-size: .85rem; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 5px 4px; }
 #c-cal .tfile { margin: 4px 0 0; }
 .sides span { margin-left: 6px; color: var(--muted); } .sides span.done { color: var(--good); font-weight: 600; }
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 14px); transform: translateX(-50%); z-index: 20;
@@ -244,10 +269,12 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
   <div class="tfile">
     <button class="nav" id="btn-psave">⬇ Save .param</button>
     <button class="nav" id="btn-pload">⬆ Load .param</button>
+    <button class="nav" id="btn-guide">? Tuning guide</button>
+    <button class="reset" id="btn-pdef">Load defaults</button>
     <span id="tmsg"></span>
     <input type="file" id="file-param" accept=".param,.txt,text/plain" hidden>
   </div>
-  <div class="tgrid" id="tgrid"></div>
+  <div id="tgrid"></div>
   <div class="card" id="c-cal"><h2>IMU Calibration</h2>
     <div class="kv"><span>Gyro + accel offsets</span><span class="v" id="cal-offs">--</span></div>
     <div class="kv"><span>6-side accel</span><span class="v" id="cal-acal">--</span></div>
@@ -256,13 +283,125 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
     <div class="tfile">
       <button class="nav" id="btn-caloff">Calibrate offsets (flat)</button>
       <button class="nav" id="btn-calside">Capture position</button>
+      <button class="nav" id="btn-calgyro">Calibrate gyro scale</button>
       <button class="reset" id="btn-calfac">Factory offsets</button>
       <button class="reset" id="btn-calclr">Clear 6-side</button>
     </div>
   </div>
 </div>
 
+<div class="wrap" id="page-guide" hidden>
+  <div class="ttop"><button class="nav" id="btn-gback">‹ Tuning</button><b>🐋 Yaw Tuning Guide</b></div>
+
+  <div class="card"><h3>Quick start - first time with the defaults</h3>
+    <p>The defaults are worked out for this robot (30 lb, 101 mm wheels on a 345 mm track, 19:1, 1400 KV on 6S, which spins at about 2300 °/s flat out). They're deliberately soft: a safe starting point, not a finished tune.</p>
+    <ol>
+      <li><b>Load defaults</b> - press it on the tuning page after flashing (Name and WiFi boxes are kept).</li>
+      <li><b>Check Yaw Dir before anything else.</b> Wheels off the ground, in a non-Stab mode, steer right: Bulk Text <code>Yaw … °/s</code> must go <b>positive</b>.
+        If it goes negative, set Yaw Dir to Reversed. The defaults include P and I, so a wrong sign makes the controller fight you - the 0.6 Out Limit keeps that to 60% steering.</li>
+      <li><b>Measure the flat-out spin.</b> Still in a non-Stab mode, full stick, read the same Bulk Text figure. If it isn't about 2300, set
+        <b>FF = 900 ÷ that figure</b> (900 being the default Max Rate). The 2300 estimate assumes the 101 mm wheels and 19:1 gearbox set in the code are right.</li>
+      <li><b>Tune in the order below.</b> Mainly: raise P until it wobbles, then back off by about a third, and raise Out Limit toward 1.0 once it behaves.</li>
+    </ol>
+  </div>
+
+  <div class="card"><h3>How it fits together</h3>
+    <p>In the Stab modes the steering stick asks for a <b>turn rate</b>. The controller compares it with the gyro and steers to make them match:</p>
+    <p><code>stick → Expo → × Max Rate → Max Accel limit → requested rate</code><br>
+       <code>steering = FF + FF Accel + P + I + D</code>, capped at <b>Out Limit</b></p>
+    <p>Settings early in that chain change how the later ones behave, so tune them in the order below. Each step lists what it affects.</p>
+  </div>
+
+  <div class="card"><h3>Before you start</h3>
+    <ul>
+      <li><b>IMU calibrated and levelled</b> (Calibration card on the tuning page). A bad calibration makes everything below wrong.</li>
+      <li>Set <b>Out Limit to 0.5</b> and do the first tests with the <b>wheels off the ground</b>.</li>
+      <li>Watch Bulk Text on the main page. In a Stab mode it shows <code>Yaw sp / meas / out / I</code>:
+        <b>sp</b> = rate asked for, <b>meas</b> = real rate (°/s), <b>out</b> = steering (−1..1), <b>I</b> = the I term's share.
+        Good tuning: meas follows sp, and out doesn't sit at ±1.</li>
+      <li>Change one thing at a time, and save a .param when something works.</li>
+    </ul>
+  </div>
+
+  <div class="card"><h3>Tuning order</h3>
+    <ol>
+      <li><b>ESC1 / ESC2 Dir</b> - get forward and turning the right way in a non-Stab mode first.
+        <br><i>Affects:</i> the sign of every turn, so Yaw Dir must be checked after any change.</li>
+      <li><b>Yaw Dir</b> - in a non-Stab mode, steer right: Bulk Text <code>Yaw … °/s</code> must go <b>positive</b>. If negative, set Reversed.
+        <br><i>Affects:</i> everything. Wrong = the controller spins the robot up instead of holding it.</li>
+      <li><b>Gyro Scale</b> - press <b>Calibrate gyro scale</b> (IMU Calibration card) and twist the robot back and forth by hand; it measures this for you.
+        Check: one full turn by hand in about a second should read about 360 in Bulk Text.
+        <br><i>Affects:</i> the measured rate, so every setting below.</li>
+      <li><b>Max Rate</b> - first find the robot's <b>flat-out spin rate</b>: in a non-Stab mode, spin at full stick and read Bulk Text <code>Yaw … °/s</code>.
+        Then pick Max Rate: how fast full stick should turn, at or below that (e.g. 900 when flat-out is 2300).
+        <br><i>Affects:</i> FF (next-but-one step) and P, I, D, FF Accel, which all work on the error as a fraction of Max Rate - raising Max Rate makes them gentler.</li>
+      <li><b>Gyro LPF Hz</b>, then <b>D LPF Hz</b> - start at 40 / 20. Only lower them if the readings are noisy (meas jumping around while driving straight).
+        <br><i>Affects:</i> more filtering = more delay = it wobbles at a lower P and D. Set these before P and D, and re-check P/D if you change them.</li>
+      <li><b>FF</b> - set to Max Rate ÷ flat-out spin rate (e.g. 900 ÷ 2300 = 0.4). Check with P/I/D at 0: meas should roughly follow sp on its own.
+        Too high = it overshoots every turn (the most common cause of overshoot). Too low = laggy, and P has to do the work.
+        <br><i>Affects:</i> how much P has to do. Lower FF = raise P to match.</li>
+      <li><b>P</b> - raise in steps of about 0.3 until the robot wobbles or buzzes in a straight line or after a quick turn, then back off by about a third.
+        Push it sideways by hand: it should snap back to a stop.
+        <br><i>Affects:</i> how much D you need. Limited by the filters (step 5).</li>
+      <li><b>D</b> - only if it overshoots when you let go of a turn. Start at 0.01, go up to about 0.05. Often lets you take P a little higher.
+        If motors buzz or get warm, D is too high or D LPF too high.
+        <br><i>Affects:</i> P (may allow more), noise (D LPF).</li>
+      <li><b>I</b> and <b>I Limit</b> - I removes a steady error and turns the robot back to where it was pointing after a hit. Try 2 to 5 with I Limit 0.3.
+        Too much I = a slow sway back and forth. If it fights hard while pinned against a wall, lower I Limit.
+        <br><i>Affects:</i> I Limit caps it; P and D need to be settled first or I hides their problems.</li>
+      <li><b>Max Accel</b> with <b>FF Accel</b> - Max Accel softens stick flicks (stops wheelspin), e.g. 3000 to 10000. Then add FF Accel (0.01 to 0.05) if turns feel slow to start or stop.
+        <br><i>Affects:</i> FF Accel only does much with Max Accel set. Both change how hard P is worked during quick turns.</li>
+      <li><b>Expo</b> - feel only, for finer aiming around centre. Doesn't change the loop.</li>
+      <li><b>Out Limit</b> - raise to 1.0 once it behaves. Below the FF value it caps full-stick turns too.</li>
+      <li><b>Standstill: Airmode, Idle Band, I Bleed</b> - last, with the robot sitting still and armed. Airmode on = it fights hits with the sticks centred.
+        If it twitches or slowly creeps round while still, raise Idle Band (2 to 5 °/s). If it fights a pin too long, raise I Bleed.
+        <br><i>Affects:</i> standstill only (I Bleed: whenever no turn is asked for). Idle Band too big = small knocks at standstill aren't corrected.</li>
+    </ol>
+  </div>
+
+  <div class="card"><h3>If you change this, re-check that</h3>
+    <table>
+      <tr><th>Changed</th><th>Re-check</th></tr>
+      <tr><td>ESC Dir</td><td>Yaw Dir</td></tr>
+      <tr><td>IMU calibration / remounting</td><td>Level, Gyro Scale, then all of it</td></tr>
+      <tr><td>Gyro Scale</td><td>Max Rate, then P / I / D</td></tr>
+      <tr><td>Max Rate</td><td>FF, then P, I, D, FF Accel</td></tr>
+      <tr><td>Gyro LPF / D LPF</td><td>P and D (wobble point moves)</td></tr>
+      <tr><td>FF</td><td>P</td></tr>
+      <tr><td>P</td><td>D, then I</td></tr>
+      <tr><td>Max Accel</td><td>FF Accel</td></tr>
+      <tr><td>New wheels / weight / battery</td><td>Max Rate, then P</td></tr>
+    </table>
+  </div>
+
+  <div class="card"><h3>What you see → what to change</h3>
+    <table>
+      <tr><th>Symptom</th><th>Likely fix</th></tr>
+      <tr><td>Spins up and won't stop as soon as Stab is on</td><td>Yaw Dir wrong - switch Stab off and fix it first</td></tr>
+      <tr><td>Fast wobble / shaking driving straight</td><td>P too high, or filters too low (too much delay)</td></tr>
+      <tr><td>Buzzing motors, warm ESCs</td><td>D too high, or D LPF too high</td></tr>
+      <tr><td>Slow sway, overshoots its heading</td><td>I too high</td></tr>
+      <tr><td>Overshoots every turn</td><td>FF too high for the Max Rate (FF = Max Rate ÷ flat-out spin)</td></tr>
+      <tr><td>Overshoots when you stop a turn</td><td>Add D, or lower Max Accel to what the tyres can grip</td></tr>
+      <tr><td>Gets knocked round and stays there</td><td>More I (or I Limit too low)</td></tr>
+      <tr><td>Turns feel laggy</td><td>FF too low, Max Accel too low, or add FF Accel</td></tr>
+      <tr><td>Full stick turns slower than it used to</td><td>Max Rate too low, or Out Limit below 1</td></tr>
+      <tr><td>Twitches or creeps round while sitting still</td><td>Raise Idle Band; if it creeps, redo Calibrate offsets</td></tr>
+      <tr><td>Keeps fighting long after being pinned</td><td>Raise I Bleed, or lower I Limit</td></tr>
+      <tr><td>out sits at ±1 a lot</td><td>Max Rate higher than the robot can do - lower it</td></tr>
+    </table>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
+
+<div class="modal" id="hmodal">
+  <div class="mbox help">
+    <p id="h-title"></p>
+    <div id="h-text"></div>
+    <div class="mbtns"><button id="h-ok">OK</button></div>
+  </div>
+</div>
 
 <div class="modal" id="modal">
   <div class="mbox">
@@ -303,19 +442,55 @@ $('dots').innerHTML = dHtml;
 
 // ---- tuning page ----
 const NSTR = 5;   // the first 5 tuning variables hold text (must match NUM_TUNE_STR in the sketch)
-let tHtml = "";
-for (let i = 0; i < 20; i++)
-  tHtml += i < NSTR
-    ? `<div class="card tv str"><label id="tn${i}">Var ${i + 1}</label><input id="tin${i}" type="text" maxlength="31" placeholder="text" autocomplete="off" autocapitalize="off" spellcheck="false"></div>`
-    : `<div class="card tv"><label id="tn${i}">Var ${i + 1}</label><input id="tin${i}" type="number" step="any" placeholder="0"></div>`;
-$('tgrid').innerHTML = tHtml;
-for (let i = 0; i < 20; i++) {
-  $('tin' + i).addEventListener('change', e => {
-    if (!websocket || websocket.readyState !== 1) return;
-    if (i < NSTR) { websocket.send(`set,${i},${e.target.value}`); return; }   // text: sent as typed
-    const v = parseFloat(e.target.value);
-    if (!isNaN(v)) websocket.send(`set,${i},${v}`);
+// The boxes are built from the names the firmware sends, so adding tuning variables in the sketch needs no page change.
+let tuneCount = 0, tuneHelp = [];
+// ? buttons: show what a box does (text comes from tuneHelp[] in the sketch)
+$('tgrid').addEventListener('click', e => {
+  const b = e.target.closest('.q');
+  if (!b) return;
+  const i = +b.dataset.i;
+  set('h-title', tuneNames[i] || ('Var ' + (i + 1)));
+  set('h-text', tuneHelp[i] || '');
+  $('hmodal').classList.add('show');
+});
+$('h-ok').onclick = () => $('hmodal').classList.remove('show');
+$('hmodal').onclick = e => { if (e.target === $('hmodal')) $('hmodal').classList.remove('show'); };
+function buildTune(n, choice, groups) {
+  if (n === tuneCount) return;
+  tuneCount = n;
+  const box = i => (choice && choice[i])   // dropdown: "value:label|value:label"
+      ? `<div class="card tv"><span class="lab"><label id="tn${i}">Var ${i + 1}</label><button class="q" data-i="${i}" hidden>?</button></span><select id="tin${i}">` +
+        choice[i].split('|').map(o => { const [v, l] = o.split(':'); return `<option value="${v}">${l}</option>`; }).join('') + `</select></div>`
+      : i < NSTR
+      ? `<div class="card tv str"><span class="lab"><label id="tn${i}">Var ${i + 1}</label><button class="q" data-i="${i}" hidden>?</button></span><input id="tin${i}" type="text" maxlength="31" placeholder="text" autocomplete="off" autocapitalize="off" spellcheck="false"></div>`
+      : `<div class="card tv"><span class="lab"><label id="tn${i}">Var ${i + 1}</label><button class="q" data-i="${i}" hidden>?</button></span><input id="tin${i}" type="number" step="any" placeholder="0"></div>`;
+  // sections: "Title:1,2,3|Title:..." from the sketch; anything not listed goes under Other
+  const secs = [], used = new Set();
+  String(groups || '').split('|').forEach(g => {
+    const c = g.indexOf(':');
+    if (c < 0) return;
+    const idx = g.slice(c + 1).split(',').map(Number).filter(i => i >= 0 && i < n && !used.has(i));
+    idx.forEach(i => used.add(i));
+    if (idx.length) secs.push([g.slice(0, c).trim(), idx]);
   });
+  const rest = [];
+  for (let i = 0; i < n; i++) if (!used.has(i)) rest.push(i);
+  if (rest.length) secs.push([secs.length ? 'Other' : '', rest]);
+  $('tgrid').innerHTML = secs.map(([t, idx]) =>
+    `<div class="tsec" data-t="${t}">${t ? `<h3>${t}</h3>` : ''}<div class="tgrid">${idx.map(box).join('')}</div></div>`).join('');
+  const hw = document.querySelector('#tgrid .tsec[data-t="Hardware"]');   // IMU calibration sits with the hardware
+  if (hw) hw.appendChild($('c-cal'));
+  for (let i = 0; i < n; i++) {
+    const inp = $('tin' + i);
+    inp.addEventListener('change', e => {
+      if (!websocket || websocket.readyState !== 1) return;
+      if (i < NSTR) { websocket.send(`set,${i},${e.target.value}`); return; }   // text: sent as typed
+      const v = parseFloat(e.target.value);
+      if (!isNaN(v)) websocket.send(`set,${i},${v}`);
+    });
+  }
+  setLockedInputs();
+  fit();
 }
 
 // ---- .param file save / load (plain text, one "NAME,value" per line) ----
@@ -372,15 +547,17 @@ function toast(t) {
   toast.timer = setTimeout(() => e.classList.remove('show'), 2500);
 }
 let isLocked = null;
+function setLockedInputs() { document.querySelectorAll('#tgrid input, #tgrid select').forEach(i => { i.disabled = !!isLocked; }); }
 function setLocked(l, rebootLocked) {
   $('btn-reboot').disabled = rebootLocked;                       // reboot: only locked when armed AND the link is up
   if (rebootLocked && $('m-yes').textContent === 'Yes, reboot') $('modal').classList.remove('show');
   if (l === isLocked) return;
   isLocked = l;
   $('btn-pload').disabled = l;
+  $('btn-pdef').disabled = l;
   $('btn-level').disabled = l;
-  ['btn-caloff','btn-calside','btn-calclr','btn-calfac'].forEach(b => { $(b).disabled = l; });                                  // level: locked with the tuning                                   // tuning: locked whenever channel 3 is high
-  document.querySelectorAll('#tgrid input').forEach(i => { i.disabled = l; });
+  ['btn-caloff','btn-calside','btn-calclr','btn-calfac','btn-calgyro'].forEach(b => { $(b).disabled = l; });   // calibration: locked with the tuning
+  setLockedInputs();
   if (l) toast(rebootLocked ? 'Armed - reboot and tuning locked' : 'Armed (link down) - tuning locked');
 }
 
@@ -489,12 +666,19 @@ function onMessage(event) {
     });
   }
 
-  if (d.names) { tuneNames = d.names; d.names.forEach((n, i) => set('tn' + i, n)); }
+  if (d.names) { tuneNames = d.names; buildTune(d.names.length, d.choice, d.groups); d.names.forEach((n, i) => set('tn' + i, n)); }
+  if (d.help) { tuneHelp = d.help; document.querySelectorAll('#tgrid .q').forEach(b => { b.hidden = !tuneHelp[+b.dataset.i]; }); }
   if (d.tune) lastTune = d.tune;
   if (d.tune) d.tune.forEach((v, i) => {
     const inp = $('tin' + i);
-    if (inp && document.activeElement !== inp) inp.value = (typeof v === 'string') ? v : +Number(v).toFixed(4);   // don't overwrite while typing
+    if (!inp || document.activeElement === inp) return;   // don't overwrite while typing
+    inp.value = (typeof v === 'string') ? v : (inp.tagName === 'SELECT' ? String(Math.round(v)) : +Number(v).toFixed(4));
   });
+  if (d.tune && typeof d.tune[0] === 'string') {   // Name box -> page title and heading
+    const nm = d.tune[0].trim() || 'Whale Stats';
+    const t = '🐋 ' + nm + ' 🐋';
+    if (document.title !== t) { document.title = t; document.querySelector('#page-main h1').textContent = t; }
+  }
 
   if (d.out) d.out.forEach((v, i) => {
     set('out-ch' + (i + 1), v);
@@ -547,8 +731,10 @@ function ask(detail, yesLabel, action) {
 $('btn-reset').onclick = () => ask('All records (Max G, Max ESC Temp, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
 $('btn-reboot').onclick = () => ask('The board will restart. Motors lose their signal and the page reconnects in a few seconds.', 'Yes, reboot', () => wsSend('reboot'));
 $('btn-level').onclick = () => ask('Sit the robot flat and the right way up, and keep it still. Its current position becomes upright, and up/down flips at 90 degrees from it.', 'Yes, level', () => { wsSend('level'); toast('Levelled'); });
+$('btn-pdef').onclick = () => ask('Every number box goes back to its default (yaw tuning, ESC and Yaw Dir, WiFi power). Name, SSID, Password and the other text boxes are kept. Save a .param first if you want to keep the current values.', 'Yes, load defaults', () => { wsSend('defaults'); tmsg('Defaults loaded'); });
 $('btn-caloff').onclick = () => ask('Put the IMU board flat with the chip facing up and keep everything perfectly still for a few seconds. The IMU stops reporting while it runs. Clears the 6-side calibration and the Level.', 'Yes, calibrate', () => wsSend('cal_off'));
 $('btn-calside').onclick = () => wsSend('cal_side');   // rest the robot on a side, keep still ~1 s
+$('btn-calgyro').onclick = () => ask('After pressing Yes, pick the robot up (or lift its wheels) and twist it back and forth quickly - at least a couple of full turns in total, within 10 seconds. It sets Gyro Scale from the IMU\'s own orientation, and saves it.', 'Yes, start', () => wsSend('cal_gyro'));
 $('btn-calfac').onclick = () => ask('Forget the saved gyro + accel offsets and go back to the chip\'s own. The IMU restarts. Clears the 6-side calibration and the Level.', 'Yes, factory', () => wsSend('cal_fac'));
 $('btn-calclr').onclick = () => ask('Forget the 6-side accel calibration (and the Level, which depends on it).', 'Yes, clear', () => wsSend('cal_clr'));
 $('m-no').onclick = () => modal.classList.remove('show');
@@ -563,6 +749,7 @@ $('m-yes').onclick = () => {
 function fit() {
   const r = document.documentElement;
   r.style.removeProperty('--fs');
+  if (!$('page-guide').hidden) return;   // the guide is meant to scroll: keep the normal text size
   let fs = parseFloat(getComputedStyle(r).getPropertyValue('--fs')) || 12;
   while ((r.scrollHeight > window.innerHeight + 1 || r.scrollWidth > window.innerWidth + 1) && fs > 7) {
     fs -= 0.25;
@@ -575,14 +762,25 @@ setInterval(fit, 3000);
 
 // ---- page switching (#tune = tuning page) ----
 function route() {
-  const t = location.hash === '#tune';
-  $('page-main').hidden = t;
-  $('page-tune').hidden = !t;
+  const h = location.hash;
+  $('page-main').hidden = (h === '#tune' || h === '#guide');
+  $('page-tune').hidden = h !== '#tune';
+  $('page-guide').hidden = h !== '#guide';
+  if (h === '#guide') window.scrollTo(0, 0);
   fit();
 }
-$('btn-tune').onclick = () => { location.hash = 'tune'; };
-$('btn-back').onclick = () => { location.hash = ''; };
+// Buttons swap the page straight away, then update the address (so Back still works). Waiting for the browser's
+// hashchange instead left a frame or two of a half-drawn page on some phones.
+function go(h) {
+  history.pushState(null, '', h ? '#' + h : location.pathname + location.search);
+  route();
+}
+$('btn-guide').onclick = () => go('guide');
+$('btn-gback').onclick = () => go('tune');
+$('btn-tune').onclick = () => go('tune');
+$('btn-back').onclick = () => go('');
 window.addEventListener('hashchange', route);
+window.addEventListener('popstate', route);
 
 window.addEventListener('load', () => { initWebSocket(); route(); setTimeout(fit, 400); });
 </script>

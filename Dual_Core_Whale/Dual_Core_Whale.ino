@@ -35,7 +35,21 @@ AsyncWebSocket ws("/ws");
 
 // ---------------- Web dashboard variables ----------------
 String modeString = "Idle";     // <- set this from anywhere in your code
-String bootState = "Starting";  // <- updated during setup()
+String bootState = "Starting";  // <- updated during setup() with setBoot()
+
+// Why the board last restarted, and how many times it has started, kept on the Boot line the whole time it runs
+// (e.g. "Running (PANIC #12)"), so a reboot nobody saw can still be diagnosed.
+String bootTag = "";
+uint32_t bootCount = 0;
+void setBoot(const char *stage) {
+  bootState = String(stage) + bootTag;
+}
+
+// Short version for the radio telemetry (15 characters max): "Run PANIC #12" once running, else the stage name
+String bootShort() {
+  if (!bootState.startsWith("Running")) return bootState.substring(0, bootState.indexOf(" ("));
+  return String("Run ") + resetReasonShort() + " #" + bootCount;
+}
 String bulkText = "";           // <- free text box, put anything in here
 
 #define ARRAY_SIZE 20
@@ -118,14 +132,124 @@ void vbatUpdate() {
 // ---- Whale Tuning ----
 // Rename them here. Use tuneVal[n] anywhere in your code; editing a box on the page changes it live.
 // Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
-#define NUM_TUNE 20
+#define NUM_TUNE 27
 const char *tuneName[NUM_TUNE] = {
   "Name", "sysID", "SSID", "Password", "Blank",
-  "WiFi Power", "P", "I", "D", "Rate Yaw Max",
-  "Accl Yaw Max", "Tune Var 12", "Tune Var 13", "Tune Var 14", "Tune Var 15",
-  "Tune Var 16", "ESC1 Dir", "ESC2 Dir", "ESC3 Dir", "ESC4 Dir"
+  "WiFi Power", "P", "I", "D", "Max Rate °/s",
+  "Max Accel °/s²", "FF", "FF Accel", "Expo", "Gyro LPF Hz",
+  "D LPF Hz", "ESC1 Dir", "ESC2 Dir", "ESC3 Dir", "ESC4 Dir",
+  "I Limit", "Out Limit", "Yaw Dir", "Gyro Scale",
+  "Airmode", "Idle Band °/s", "I Bleed"
+};
+// The yaw stabilisation boxes (6-15, 20-26) are used by yaw_pid.ino, which names them (T_YAW_...).
+// Shown when the ? next to a box is tapped on the Whale Tuning page. Keep each in step with its name above.
+const char *tuneHelp[NUM_TUNE] = {
+  "The robot's name. Shown as the page title and heading, used as the receiver's device name in the ELRS Lua script, "
+  "and as the OTA upload name (letters, numbers and - only there). Empty = the defaults. Takes effect after a reboot.",
+  "Text, up to 31 characters. Not used by the code yet - read it anywhere as tuneStr[1].",
+  "The WiFi network name this board makes. Empty = Whale. Takes effect after a reboot. "
+  "Locked yourself out? Hold channel 5 high (the ESC reboot switch) with the transmitter on while the board powers up: "
+  "it starts with the default network (Whale / Whale#1234) for that boot.",
+  "The WiFi password, 8 to 63 characters. Empty, or too short = the default (Whale#1234). Takes effect after a reboot. "
+  "See SSID for how to get back in if you forget it.",
+  "Text, up to 31 characters. Spare - read it anywhere as tuneStr[4].",
+  "WiFi transmit power. Low (8.5 dBm) runs cooler and uses less power, and is plenty within a few metres; "
+  "High (19.5 dBm) for range. Changes straight away.",
+  "P: how hard the controller corrects a difference between the turn rate you asked for and the real one. "
+  "1.0 = full steering for a full stick's worth of error. Raise in steps of about 0.3 until it holds firmly; "
+  "back off when it wobbles or buzzes. 0 = off.",
+  "I: builds up correction over time, so a steady error (a hit, a dragging wheel) gets fully removed and the robot "
+  "turns back to where it was pointing. Per second. Try 2 to 5. Too much = slow swaying. 0 = off.",
+  "D: damps the turn rate changing, to stop overshoot. Works on the measured rate only, so stick moves don't kick it. "
+  "In seconds - small numbers, try 0.01 to 0.05. Too much = buzzing. 0 = off.",
+  "Full stick asks for this turn rate, in °/s. Your choice of how fast full stick should turn - "
+  "at or below what the robot can really do flat out. All the gains are relative to it, and FF should be "
+  "set to match (see FF). 0 = stabilisation off (plain stick steering in Stab mode).",
+  "Most the requested turn rate may change per second, in °/s². Smooths sudden stick flicks so "
+  "the wheels don't break traction. e.g. 3000 to 10000. 0 = no limit.",
+  "Feedforward: steering straight from the stick, before any correction, so P/I/D only fix what's left. "
+  "Set it to Max Rate / the robot's flat-out spin rate (spin at full stick in a non-Stab mode and read Bulk Text): "
+  "e.g. 900 / 2300 = 0.4. Too high = overshoot on every turn; too low = laggy, P has to do the work.",
+  "Acceleration feedforward, in seconds: an extra push while the requested rate is still changing, to make turns start "
+  "and stop crisply. Mostly useful with Max Accel set. Try 0.01 to 0.05. 0 = off.",
+  "Stick expo, 0 to 1. 0 = linear. Higher = softer around centre for fine aiming, still full rate at full stick.",
+  "Low-pass filter on the measured turn rate, in Hz. Removes vibration noise; lower = smoother but adds delay. "
+  "Keep under 50 (the IMU gives about 100 readings a second). 0 = off.",
+  "Low-pass filter on the D term only, in Hz. D amplifies noise, so it gets its own filter. Typically about half the "
+  "Gyro LPF. 0 = off.",
+  "Reverses ESC 1's motor in software (forward and back swap; stop stays stop). Locked while armed. "
+  "Reversing a motor changes which way the robot turns, so re-check Yaw Dir after changing this.",
+  "Reverses ESC 2's motor in software (forward and back swap; stop stays stop). Locked while armed. "
+  "Reversing a motor changes which way the robot turns, so re-check Yaw Dir after changing this.",
+  "Reverses ESC 3's motor in software. Only does something once ESC 3 is driven (NUM_ESC and the mixer).",
+  "Reverses ESC 4's motor in software. Only does something once ESC 4 is driven (NUM_ESC and the mixer).",
+  "Most the I term may add, 0 to 1 of full steering. Stops it building up a huge correction while the robot is stuck "
+  "against something. e.g. 0.3.",
+  "Most the whole controller may steer, 0 to 1. Start at 0.5 while first tuning, so a wrong sign or gain can't spin "
+  "it hard; then raise to 1.0.",
+  "CHECK FIRST: in a non-Stab mode steer right - the Bulk Text 'Yaw ... °/s' should go positive. If it goes "
+  "negative, set Reversed. Wrong sign = the controller spins the robot instead of holding it.",
+  "Gyro counts per °/s. The datasheet says 16.4, but readings that come through the IMU's DMP can be scaled "
+  "differently (and clone chips vary), so use Calibrate gyro scale in the IMU Calibration card: it measures this for "
+  "you. Check: one full turn by hand in about a second should read about 360 in Bulk Text. Load defaults keeps it.",
+  "On: keeps correcting with both sticks centred, so a hit at standstill gets fought and the robot turns back to its "
+  "heading (like a quad's airmode). Off: hands off whenever both sticks are centred - the robot can be knocked round "
+  "freely, and the controller picks up again as soon as a stick moves.",
+  "With both sticks centred, turn-rate errors smaller than this (°/s) are ignored. Stops the robot twitching at "
+  "standstill as small corrections build up until the wheels break free, and stops a slow creep from gyro drift. "
+  "Only at standstill - driving is unaffected. 0 = off. Typically 2 to 5.",
+  "While no turn is asked for, the I term (the 'held heading') slowly fades, per second: 0.1 = down to about a third "
+  "in 10 s. Stops it fighting a pin forever (stalled motors, no current limit), while a quick hit still gets "
+  "corrected. 0 = holds forever. Higher = lets go sooner."
 };
 volatile float tuneVal[NUM_TUNE] = { 0 };
+
+// Sections on the Whale Tuning page: "Title:box,box,...|Title:...". Boxes appear in the order listed (the yaw ones in
+// tuning order). Any box not listed goes in an "Other" section at the end.
+const char *tuneGroups =
+  "Yaw Tuning:9,14,15,11,6,8,7,20,10,12,13,21,24,25,26"
+  "|Hardware:16,17,18,19,22,23"
+  "|Software:0,1,2,3,5,4";
+
+// Boxes shown as a dropdown instead of a number: "value:label|value:label". nullptr = a normal number box.
+const char *tuneChoice[NUM_TUNE] = {
+  nullptr, nullptr, nullptr, nullptr, nullptr,
+  "1:Low|2:Medium|3:High", nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, "0:Normal|1:Reversed", "0:Normal|1:Reversed", "0:Normal|1:Reversed", "0:Normal|1:Reversed",
+  nullptr, nullptr, "1:Normal|-1:Reversed", nullptr,
+  "1:On|0:Off", nullptr, nullptr
+};
+#define T_WIFI_POWER 5   // 1 low, 2 medium, 3 high (0 / anything else = high)
+#define T_ESC_DIR 16     // 16..19: ESC 1..4 direction, 0 normal, 1 reversed
+
+// Starting values, used for any box that has never been saved and by the page's "Load defaults" button.
+// Worked out for this robot: 30 lb, 2 wheels 101 mm on a 345 mm track, 19:1, 1400 KV on 6S (~2300 °/s flat-out
+// spin), VytaFlex 20 on steel (grip limits yaw acceleration to roughly 2000-3000 °/s²). Deliberately soft:
+// a starting point for tuning, not a finished tune. CHECK YAW DIR BEFORE USING STAB MODE.
+const float tuneDefault[NUM_TUNE] = {
+  0, 0, 0, 0, 0,
+  3,        // WiFi power: high
+  1.5f,     // P
+  3.0f,     // I
+  0.02f,    // D
+  900.0f,   // Max Rate: 2.5 turns/s, well under the ~2300 the robot can do
+  2500.0f,  // Max Accel: about what the tyres can deliver without spinning
+  0.4f,     // FF: Max Rate / the robot's top spin rate (900 / ~2300)
+  0.02f,    // FF Accel
+  0.3f,     // Expo
+  40.0f,    // Gyro LPF Hz
+  20.0f,    // D LPF Hz
+  0, 0, 0, 0,  // ESC dirs
+  0.3f,     // I Limit
+  0.6f,     // Out Limit: room for corrections on top of FF, but caps a wrong-sign runaway
+  1.0f,     // Yaw Dir
+  16.4f,    // Gyro Scale
+  1.0f,     // Airmode: on
+  3.0f,     // Idle Band
+  0.1f      // I Bleed: very slow (about 10 s to let go)
+};
+
 
 // The FIRST NUM_TUNE_STR tuning variables hold text instead of a number. Read them anywhere as plain C strings,
 // e.g. tuneStr[0] (up to 31 characters). They are saved to flash and in the .param file like the numbers.
@@ -268,7 +392,7 @@ int roll_flip = 20;
 // Until it has been levelled, up/down is treated as if there were no IMU: always upright.
 // Up/down source: 1 = the accelerometer (low-pass filtered: measures gravity directly, unaffected by any DMP
 // gyro-scale error), 0 = the DMP's fused orientation. Both are always worked out and shown in Bulk Text for comparison.
-#define IMU_UP_FROM_ACCEL 0
+#define IMU_UP_FROM_ACCEL 1
 #define IMU_ACC_LP 0.1f              // accel filter per packet (~100 Hz): 0.1 = ~0.1 s time constant. Lower = steadier but slower
 float imuRef[3] = { 0, 0, 0 };       // upright direction as seen by the DMP gravity vector
 float imuRefA[3] = { 0, 0, 0 };      // upright direction as seen by the filtered accelerometer
@@ -298,6 +422,7 @@ volatile bool imuCalOffReq = false;            // web -> IMU task requests
 volatile bool imuCalSideReq = false;
 volatile bool imuCalClearReq = false;
 volatile bool imuCalFactoryReq = false;
+volatile bool imuCalGyroReq = false;          // gyro scale calibration (yaw_pid.ino)
 volatile bool imuCalFactoryMsg = false;
 volatile bool imuOffSave = false;              // IMU task -> loop(): write to flash
 volatile bool accCalSave = false;
@@ -451,10 +576,16 @@ bool rebootBlocked() {
 void setup() {
   Serial.begin(115200);
   Serial.printf("Reset reason: %s\n", resetReasonShort());
+  prefs.begin("whale", false);  // boot counter, so reboots that nobody saw show up
+  bootCount = prefs.getUInt("boots", 0) + 1;
+  prefs.putUInt("boots", bootCount);
+  prefs.end();
+  bootTag = String(" (") + resetReasonShort() + " #" + bootCount + ")";
+  Serial.printf("Boot #%u\n", (unsigned)bootCount);
 
   Serial.println("ELRS 4.x receiver starting");
 
-  bootState = "Receiver init";
+  setBoot("Receiver init");
   crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX, PIN_TX);
   if (!crsfSerial) {
     Serial.println("Invalid crsfSerial configuration");
@@ -465,7 +596,7 @@ void setup() {
 
   ledInit();
 
-  bootState = "GPIO init";
+  setBoot("GPIO init");
   led(1, 1);
 
   gpio_config_t cfg = {};
@@ -477,7 +608,7 @@ void setup() {
     gpio_set_level((gpio_num_t)ESC_PINS[i], 0);
   }
 
-  bootState = "Waiting 2s";
+  setBoot("Waiting 2s");
   for (unsigned long start = millis(); millis() - start < 4000;) {
   }
 
@@ -488,6 +619,7 @@ void setup() {
   Serial.printf("Free stack: %d\n", uxTaskGetStackHighWaterMark(NULL));
 
   loadTune();   // restore saved tuning values first
+  if (tuneStr[0][0]) crsf.setDeviceName(tuneStr[0]);  // the Name box, shown in the ELRS Lua script
   loadLevel();  // and the IMU's levelled "upright" direction (before the IMU task starts)
   loadImuCal();  // and the IMU calibrations (offsets are written to the chip in imuBegin())
 
@@ -499,7 +631,7 @@ void setup() {
   for (int i = 0; i < YnumReadings; i++) Yreadings[i] = 0;
   for (int i = 0; i < ARRAY_SIZE; i++) modeArray[i] = false;
 
-  bootState = "IMU init";
+  setBoot("IMU init");
   // The I2C bus on a breadboard can glitch, so try the IMU several times (restarting the bus between
   // attempts) before giving up. dmpInitialize() returns 0 on success.
   uint8_t devStatus = 1;
@@ -541,7 +673,7 @@ void setup() {
   // The LED task runs with or without an IMU, so the status LEDs (e.g. the purple "no IMU" blink) still work.
   xTaskCreatePinnedToCore(ledTask, "ledTask", 4096, NULL, configMAX_PRIORITIES - 2, NULL, 0);
 
-  bootState = "WiFi AP start";
+  setBoot("WiFi AP start");
   webBegin();  // WiFi access point + web server + WebSocket (web.ino)
 
   ArduinoOTA
@@ -581,15 +713,27 @@ void setup() {
       }
     });
 
+  {  // the Name box as the OTA upload name: letters, numbers and '-' only
+    static char host[TUNE_STR_LEN];
+    int n = 0;
+    for (const char *p = tuneStr[0]; *p && n < TUNE_STR_LEN - 1; p++) {
+      char c = *p;
+      if (isalnum((unsigned char)c)) host[n++] = tolower((unsigned char)c);
+      else if ((c == ' ' || c == '-' || c == '_') && n > 0 && host[n - 1] != '-') host[n++] = '-';
+    }
+    while (n > 0 && host[n - 1] == '-') n--;
+    host[n] = 0;
+    if (n > 0) ArduinoOTA.setHostname(host);
+  }
   ArduinoOTA.begin();
 
-  bootState = "Waiting 2s";
+  setBoot("Waiting 2s");
   for (unsigned long start = millis(); millis() - start < 2000;) {
   }
 
   for (int i = 0; i < NUM_ESC; i++) escs[i].begin(ESC_PINS[i], DSHOT600, true, MOTOR_POLES);
 
-  bootState = "Waiting for ESC boot";
+  setBoot("Waiting for ESC boot");
   unsigned long lastBootPush = 0;
   for (unsigned long start = millis(); millis() - start < 5000;) {
     unsigned long currentMicros = micros();
@@ -603,11 +747,11 @@ void setup() {
     }
   }
 
-  bootState = "Enabling EDT";
+  setBoot("Enabling EDT");
   for (int i = 0; i < NUM_ESC; i++) escs[i].command(DSHOT_CMD_EDT_ENABLE);
   escMonitorStart();  // from here on, an ESC that drops out is re-initialised automatically (drive.ino)
 
-  bootState = "CPU monitor init";
+  setBoot("CPU monitor init");
   CpuMonitorConfig cpucfg;
   cpucfg.sampleIntervalMs = 10;
   cpucfg.calibrationSamples = 5;
@@ -616,17 +760,16 @@ void setup() {
 
   cpuMonitorOk = cpuMonitor.init(cpucfg);
   if (!cpuMonitorOk) {
-    Serial.println("CPU monitor init failed");
-    return;
+    Serial.println("CPU monitor init failed");  // carry on: the CPU figures just stay at 0 (returning here used to skip the safety check below)
   }
 
-  bootState = String("Ready (") + resetReasonShort() + ")";  // e.g. Ready (PANIC), Ready (BROWN), Ready (PWR)
+  setBoot("Ready");  // e.g. Ready (PANIC #12), Ready (BROWN #3), Ready (PWR #1)
 
   led(1, 0);
 
   pre_arm_safe();
 
-  bootState = "Running";
+  setBoot("Running");
 }
 
 void loop() {

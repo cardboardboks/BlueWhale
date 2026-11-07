@@ -24,7 +24,7 @@ void status() {
     if (i) escLine += "  ";
     escLine += String(escLossPct(i), 1) + "% d" + String(escDrops[i]) + "/r" + String(escReinits[i]);
   }
-  bulkText = escLine + "\nTilt: " + (imuLevelled ? String((float)imuTiltDeg, 0) + " deg (dmp " + String((float)imuTiltDmpDeg, 0) + " acc " + String((float)imuTiltAccDeg, 0) + ")" : String("not levelled")) + "  Yaw: " + String(Y);
+  bulkText = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + escLine + "\nTilt: " + (imuLevelled ? String((float)imuTiltDeg, 0) + "° (dmp " + String((float)imuTiltDmpDeg, 0) + " acc " + String((float)imuTiltAccDeg, 0) + ")" : String("not levelled")) + "  Yaw: " + String(Y) + "\n" + yawStatusLine();  // yaw controller line (yaw_pid.ino)
 
   // longest gap between loop() passes, reported once a second on the page's diagnostics line
   static uint32_t lastLoopUs = micros();

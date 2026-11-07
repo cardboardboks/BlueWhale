@@ -83,7 +83,7 @@ void readSensors() {
   telem.totalAmps = iSum;
 
   setStatusString(telem.mode, modeString.c_str());
-  setStatusString(telem.boot, bootState.c_str());
+  setStatusString(telem.boot, bootShort().c_str());  // fits the 15-character limit, keeps the reset reason
   const char *o = !imuAlive() ? "IMU Lost" : (imuOrient > 0) ? "Up" : (imuOrient < 0) ? "Down" : "--";
   setStatusString(telem.orientation, o);
 }
