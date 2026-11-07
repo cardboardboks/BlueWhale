@@ -133,7 +133,7 @@ void imuTask(void *arg) {
       roll = (int)fabsf(ypr[2] * 180.0f / M_PI);
 
       RPtotal -= RPreadings[RPreadIndex];
-      RPreadings[RPreadIndex] = min(roll + pitch, 70 * 2);
+      RPreadings[RPreadIndex] = min(roll + pitch, 140);  // tilt shown in Bulk Text only; up/down comes from robotDown()
       RPtotal += RPreadings[RPreadIndex];
       RPreadIndex = (RPreadIndex + 1) % RPnumReadings;
       RP = RPtotal / RPnumReadings;

@@ -82,7 +82,7 @@ void addEsc(JsonArray arr, int i, bool ok) {
   o["t"] = escs[i].temperatureC();
   o["rpm"] = rpmOut;
   o["spd"] = escSpeed(i);
-  o["link"] = (float)escs[i].lossPercent();  // adjust if you want a different "link" metric
+  o["link"] = escLossPct(i);  // % of frames with no telemetry reply since boot / the last reconnect
 }
 
 String getSerializedData() {

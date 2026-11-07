@@ -51,7 +51,7 @@ void drive_escs(int thr1, int thr2) {
   }
 
   // if safe force esc to disarm and set leds
-  if (txchannel[3] < 1100 && crsf.isLinkUp() == 1 && RP <= (70)) {
+  if (txchannel[3] < 1100 && crsf.isLinkUp() == 1 && !robotDown()) {
     thr1 = 0;
     thr2 = 0;
     throttle1 = 0;
@@ -64,7 +64,7 @@ void drive_escs(int thr1, int thr2) {
     led(3, 0);
   }
 
-  if (txchannel[3] < 1100 && crsf.isLinkUp() == 1 && RP >= (70)) {
+  if (txchannel[3] < 1100 && crsf.isLinkUp() == 1 && robotDown()) {
     thr1 = 0;
     thr2 = 0;
     throttle1 = 0;
@@ -167,7 +167,10 @@ bool escPresent(int i) {
 // Per ESC:  OK --(no telemetry for ESC_LOST_US)--> LOST --(telemetry back)--> REARM (zero throttle, then EDT enable
 // sent ESC_EDT_TRIES times, then stats reset) --> RAMP (stopped -> live command over ESC_RAMP_MS) --> OK.
 // If it goes quiet again during REARM / RAMP it drops straight back to LOST.
-// Manual reboot (channel 5): any state --> CUT (no signal for ESC_CUT_MS) --> LOST --> the normal path above.
+// Manual reboot (channel 5), blind: any state --> CUT (no signal for ESC_CUT_MS) --> REARM --> RAMP --> OK, on
+// timers alone. Telemetry is ignored the whole way, so it always hands control back.
+// In OK, an ESC only counts as lost if it has been heard from since entering OK - so one whose telemetry
+// didn't come back after a blind reboot keeps driving instead of locking out again.
 
 // Link stats restart from zero (called on every successful reconnect)
 void escResetStats(int i) {
@@ -202,12 +205,20 @@ void escMonitorStart() {
 static void escSetState(int i, uint8_t st) {
   escState[i] = st;
   escStateMs[i] = millis();
+  if (st == ESC_OK) {
+    escHeard[i] = false;  // must hear it again before it can be declared lost
+    escBlind[i] = false;
+  }
 }
 
-// Reboot every ESC, whether or not it looks healthy
+// Reboot every ESC blind, whether or not it looks healthy
 void escRebootAll() {
   if (!escMonitorOn) return;  // still booting: setup() is already doing this
-  for (int i = 0; i < NUM_ESC; i++) escSetState(i, ESC_CUT);
+  for (int i = 0; i < NUM_ESC; i++) {
+    escBlind[i] = true;
+    escEdtTries[i] = 0;
+    escSetState(i, ESC_CUT);
+  }
   Serial.println("ESC reboot (channel 5)");
 }
 
@@ -225,11 +236,16 @@ int escMonitorUpdate(int i, int rawThr) {
 
   switch (escState[i]) {
     case ESC_CUT:
-      if (now - escStateMs[i] >= ESC_CUT_MS) escSetState(i, ESC_LOST);  // signal comes back (zero); waits to hear it
+      if (now - escStateMs[i] >= ESC_CUT_MS) {  // signal back on (zero throttle) and straight into re-arm
+        escEdtTries[i] = 0;
+        escSetState(i, ESC_REARM);
+      }
       return 0;
 
     case ESC_OK:
-      if (!hearing) {
+      if (hearing && !escHeard[i]) {
+        escHeard[i] = true;
+      } else if (!hearing && escHeard[i]) {
         escDrops[i]++;
         escSetState(i, ESC_LOST);
         Serial.printf("ESC%d lost\n", i + 1);
@@ -245,7 +261,7 @@ int escMonitorUpdate(int i, int rawThr) {
       break;
 
     case ESC_REARM:
-      if (!hearing) {
+      if (!hearing && !escBlind[i]) {
         escSetState(i, ESC_LOST);
         break;
       }
@@ -261,13 +277,14 @@ int escMonitorUpdate(int i, int rawThr) {
       break;
 
     case ESC_RAMP:
-      if (!hearing) {
+      if (!hearing && !escBlind[i]) {
         escSetState(i, ESC_LOST);
         break;
       }
       {
         uint32_t el = now - escStateMs[i];
         if (el >= ESC_RAMP_MS) {
+          if (escBlind[i]) Serial.printf("ESC%d blind reboot done, telemetry %s\n", i + 1, hearing ? "OK" : "NOT back");
           escSetState(i, ESC_OK);  // ramp finished: full command from here on
           break;
         }

@@ -265,8 +265,10 @@ int roll_flip = 20;
 // Up/down detection from the IMU (sets imuOrient to 1 = up, -1 = down)
 int imuUpAxis = 2;            // which sensor axis points UP when the robot is the right way up: 0 = X, 1 = Y, 2 = Z
 bool imuUpInverted = false;   // true if that axis points DOWN when the robot is the right way up
-float imuOrientHyst = 0.15f;  // dead band, in g (0 to 1). The robot must swing past this before the state flips back.
-                              // 0.15 = flips when the axis is within about 9 degrees of horizontal, 0.5 = 30 degrees, 0 = no hysteresis.
+// Dead band around the 90 degree flip, in degrees: the robot must tilt this far past sideways before it changes
+// between up and down (5 -> becomes "down" at 95 degrees of tilt, "up" again at 85). 0 = no dead band.
+#define FLIP_DEADBAND 5
+float imuOrientHyst = sinf(FLIP_DEADBAND * (float)M_PI / 180.0f);  // the same dead band as a fraction of 1 g, used in imu.ino
 
 const int RPnumReadings = 10;
 int RPreadings[RPnumReadings];
@@ -280,6 +282,7 @@ int Ytotal = 0;
 
 volatile int RP = 0;
 volatile int Y = 0;
+
 
 // Raw IMU values for the web page (written on core 0, read on core 1)
 volatile int16_t imuGx = 0, imuGy = 0, imuGz = 0;
@@ -378,6 +381,15 @@ volatile uint32_t imuLastGoodMs = 0;  // millis() when the last good IMU packet 
 bool imuAlive() {
   uint32_t t = imuLastGoodMs;
   return t != 0 && (uint32_t)(millis() - t) < IMU_DROPOUT_MS;
+}
+
+// ---- Upside-down detection (drives the mixer's direction flip and the disarmed LEDs) ----
+// Uses the same up/down as the web page's Orientation arrow (imuOrient, worked out from the DMP gravity vector in
+// imu.ino): it flips at a true 90 degree tilt, with the dead band set by FLIP_DEADBAND (imuOrientHyst).
+// No IMU at boot, or IMU lost while running: the robot is treated as upright.
+bool robotDown() {
+  if (!IMU_safe || !imuAlive()) return false;  // IMU missing / dropped out -> upright
+  return imuOrient < 0;                        // 0 (not decided yet) also counts as upright
 }
 
 // true while the arm switch (channel 3) is high. Checked on the channel value alone, like mixer.ino does, so a

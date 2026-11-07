@@ -6,7 +6,13 @@ void status() {
   }
 
   // ---- Bulk text ----
-  bulkText = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + String(escs[0].lossPercent()) + "  " + String(escs[1].lossPercent()) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
+  // line 2, per ESC: loss % since (re)connect, then drops/reinits since boot
+  String escLine = "";
+  for (int i = 0; i < NUM_ESC; i++) {
+    if (i) escLine += "  ";
+    escLine += String(escLossPct(i), 1) + "% d" + String(escDrops[i]) + "/r" + String(escReinits[i]);
+  }
+  bulkText = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + escLine + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
 
   // longest gap between loop() passes, reported once a second on the page's diagnostics line
   static uint32_t lastLoopUs = micros();
