@@ -154,6 +154,12 @@ bool cpuMonitorOk = false;  // only true once init() succeeded; getLastSample() 
 #define PIN_RX 5
 #define PIN_TX 4
 
+// Must match DATA_TYPE / STATUS_TYPE / VERSION in /SCRIPTS/WHALE/whale_decode.lua
+#define CRSF_TYPE_VI_DATA    0x42
+#define CRSF_TYPE_VI_STATUS  0x43
+#define VI_PROTO_VERSION     3
+#define VI_MAX_STR           15
+
 #define SCL_PIN 6
 #define SDA_PIN 7
 #define INT_PIN 8
