@@ -1,7 +1,12 @@
 void status() {
 
+  if (tuneDirty && millis() - tuneChangedMs > TUNE_SAVE_DELAY_MS) {
+    tuneDirty = false;
+    saveTune();
+  }
+
   // ---- Bulk text ----
-  bulkText = String(escs[0].lossPercent()) + "  " + String(escs[1].lossPercent()) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
+  bulkText = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + String(escs[0].lossPercent()) + "  " + String(escs[1].lossPercent()) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
 
   // longest gap between loop() passes, reported once a second on the page's diagnostics line
   static uint32_t lastLoopUs = micros();
