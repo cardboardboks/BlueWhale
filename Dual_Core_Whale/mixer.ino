@@ -9,12 +9,17 @@
 
 const float DEADBAND = 0.05f;   // ignore stick noise near centre
 const float STEER_GAIN = 1.0f;  // lower = gentler turning
+// When the drive direction flips (robot turned over, or the ch6 reverse switch), the outputs blend from what they
+// were sending to the new command over this long, instead of jumping. 0 = instant flip like before.
+const uint32_t FLIP_RAMP_MS = 200;
 
 // throttle, steering: 1000-2000 us (1500 = centre)
 void mixer(float throttle, float steering) {
 
-  float t = 1500;
-  float s = 1500;
+  // stopped unless one of the modes below is active (these are -1..1, so 0 = centre)
+  float t = 0;
+  float s = 0;
+  int dir = 1;  // -1 in the modes that invert the throttle (used to spot a direction flip)
 
   // scale and constrain inputs
   // impliment logic for auto up and reverese
@@ -33,7 +38,7 @@ void mixer(float throttle, float steering) {
 
 
   // 8 stabilisation off, drive forward, top: slow blink green
-  if (txchannel[6] == 1000 && RP <= (70) && txchannel[3] == 2000 && txchannel[4] == 1500) {
+  if (txchannel[6] == 1000 && !robotDown() && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(8, 1);
     modeString = "Man Up Fwd";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
@@ -43,9 +48,10 @@ void mixer(float throttle, float steering) {
   }
 
   // 9 stabilisation off, drive backwards, top: blinking green
-  if (txchannel[6] == 2000 && RP <= (70) && txchannel[3] == 2000 && txchannel[4] == 1500) {
+  if (txchannel[6] == 2000 && !robotDown() && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(9, 1);
     modeString = "Man Up Rev";
+    dir = -1;
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
   } else {
@@ -53,9 +59,10 @@ void mixer(float throttle, float steering) {
   }
 
   // 10 stabilisation off, drive forward, bottom: slow blink green
-  if (txchannel[6] == 1000 && RP >= (70) && txchannel[3] == 2000 && txchannel[4] == 1500) {
+  if (txchannel[6] == 1000 && robotDown() && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(10, 1);
     modeString = "Man Dwn Fwd";
+    dir = -1;
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -63,7 +70,7 @@ void mixer(float throttle, float steering) {
   }
 
   // 11 stabilisation off, drive backwards, bottom: blinking green
-  if (txchannel[6] == 2000 && RP >= (70) && txchannel[3] == 2000 && txchannel[4] == 1500) {
+  if (txchannel[6] == 2000 && robotDown() && txchannel[3] == 2000 && txchannel[4] == 1500) {
     led(11, 1);
     modeString = "Man Dwn Rev";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
@@ -75,7 +82,7 @@ void mixer(float throttle, float steering) {
 
 
   // 12 stabilisation on, drive forward, top: slow blink white
-  if (txchannel[6] == 1000 && RP <= (70) && txchannel[3] == 2000 && txchannel[4] == 1000) {
+  if (txchannel[6] == 1000 && !robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(12, 1);
     modeString = "Stab Up Fwd";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
@@ -85,9 +92,10 @@ void mixer(float throttle, float steering) {
   }
 
   // 13 stabilisation on, drive backwards, top: blinking white
-  if (txchannel[6] == 2000 && RP <= (70) && txchannel[3] == 2000 && txchannel[4] == 1000) {
+  if (txchannel[6] == 2000 && !robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(13, 1);
     modeString = "Stab Up Rev";
+    dir = -1;
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
   } else {
@@ -95,9 +103,10 @@ void mixer(float throttle, float steering) {
   }
 
   // 14 stabilisation on, drive forward, bottom: slow blink white
-  if (txchannel[6] == 1000 && RP >= (70) && txchannel[3] == 2000 && txchannel[4] == 1000) {
+  if (txchannel[6] == 1000 && robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(14, 1);
     modeString = "Stab Dwn Fwd";
+    dir = -1;
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -105,7 +114,7 @@ void mixer(float throttle, float steering) {
   }
 
   // 15 stabilisation on, drive backwards, bottom: blinking white
-  if (txchannel[6] == 2000 && RP >= (70) && txchannel[3] == 2000 && txchannel[4] == 1000) {
+  if (txchannel[6] == 2000 && robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(15, 1);
     modeString = "Stab Dwn Rev";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
@@ -125,6 +134,33 @@ void mixer(float throttle, float steering) {
     left /= peak;
     right /= peak;
   }
+
+  // Direction flip ramp: on a flip, remember what was being sent and blend from it to the live command.
+  // The target keeps following the sticks during the ramp. A second flip mid-ramp starts again from wherever it got to.
+  static int lastDir = 1;
+  static float outL = 0, outR = 0;    // what was sent last pass
+  static float fromL = 0, fromR = 0;  // what was being sent when the flip happened
+  static uint32_t flipMs = 0;
+  static bool ramping = false;
+  if (dir != lastDir) {
+    lastDir = dir;
+    fromL = outL;
+    fromR = outR;
+    flipMs = millis();
+    ramping = true;
+  }
+  if (ramping) {
+    uint32_t el = millis() - flipMs;
+    if (el >= FLIP_RAMP_MS) {
+      ramping = false;
+    } else {
+      float k = (float)el / (float)FLIP_RAMP_MS;
+      left = fromL + (left - fromL) * k;
+      right = fromR + (right - fromR) * k;
+    }
+  }
+  outL = left;
+  outR = right;
 
   // scale back to standard rc range 1000-2000
   drive1_pwm = 1500 + (int)lroundf(left * 500.0f);

@@ -263,10 +263,56 @@ int yaw = 0;
 int roll_flip = 20;
 
 // Up/down detection from the IMU (sets imuOrient to 1 = up, -1 = down)
-int imuUpAxis = 2;            // which sensor axis points UP when the robot is the right way up: 0 = X, 1 = Y, 2 = Z
-bool imuUpInverted = false;   // true if that axis points DOWN when the robot is the right way up
-float imuOrientHyst = 0.15f;  // dead band, in g (0 to 1). The robot must swing past this before the state flips back.
-                              // 0.15 = flips when the axis is within about 9 degrees of horizontal, 0.5 = 30 degrees, 0 = no hysteresis.
+// "Up" direction in the sensor's own axes, measured by pressing Level on the web page with the robot sitting flat
+// and the right way up. Saved to flash and reloaded at boot. Works for any IMU mounting angle.
+// Until it has been levelled, up/down is treated as if there were no IMU: always upright.
+// Up/down source: 1 = the accelerometer (low-pass filtered: measures gravity directly, unaffected by any DMP
+// gyro-scale error), 0 = the DMP's fused orientation. Both are always worked out and shown in Bulk Text for comparison.
+#define IMU_UP_FROM_ACCEL 0
+#define IMU_ACC_LP 0.1f              // accel filter per packet (~100 Hz): 0.1 = ~0.1 s time constant. Lower = steadier but slower
+float imuRef[3] = { 0, 0, 0 };       // upright direction as seen by the DMP gravity vector
+float imuRefA[3] = { 0, 0, 0 };      // upright direction as seen by the filtered accelerometer
+volatile bool imuLevelled = false;   // true once a valid upright direction has been loaded or measured
+volatile float imuTiltDmpDeg = 0;    // tilt from the DMP (diagnostics)
+volatile float imuTiltAccDeg = 0;    // tilt from the accelerometer (diagnostics)
+
+// ---- IMU calibration (buttons on the Whale Tuning page) ----
+// 1) Offsets: the library's flat calibration for the gyro and accel offset registers. IMU board flat, chip facing up,
+//    perfectly still. Saved to flash and written to the chip at every start; with nothing saved the chip's own
+//    factory offsets are used. This is what the DMP benefits from.
+// 2) 6-side accel: rest the robot still in different positions - its 6 sides is ideal, any order, the IMU needn't be
+//    square to the robot - and capture each. Once every axis has been both up and down, a sphere fit works out an
+//    offset and scale per accel axis, applied in software to the accel used for up/down and Max G (not the DMP).
+// Either calibration changes how the IMU reads, so the saved Level is cleared and must be done again afterwards.
+int16_t imuOffs[6] = { 0 };                    // accel X, Y, Z then gyro X, Y, Z offset registers
+volatile bool imuOffsValid = false;            // saved offsets loaded / measured
+float accOff[3] = { 0, 0, 0 };                 // 6-side accel: zero point per axis (counts)
+float accScale[3] = { DMP_ACCEL_LSB_PER_G, DMP_ACCEL_LSB_PER_G, DMP_ACCEL_LSB_PER_G };  // counts per g per axis
+volatile bool accCalValid = false;             // 6-side calibration loaded / measured
+#define CAL_MAX_POINTS 12                      // most positions kept for the fit
+float calPts[CAL_MAX_POINTS][3];               // captured averages, in g
+volatile uint8_t calN = 0;                     // how many captured
+volatile uint8_t sideMask = 0;                 // which way up each capture was (X+ X- Y+ Y- Z+ Z-); all 6 -> fit
+volatile float accCalRms = 0;                  // fit error of the last 6-side calibration, in g
+volatile bool imuCalOffReq = false;            // web -> IMU task requests
+volatile bool imuCalSideReq = false;
+volatile bool imuCalClearReq = false;
+volatile bool imuCalFactoryReq = false;
+volatile bool imuCalFactoryMsg = false;
+volatile bool imuOffSave = false;              // IMU task -> loop(): write to flash
+volatile bool accCalSave = false;
+const char *volatile imuCalMsg = "";           // status text for the tuning page
+#define CAL_SIDE_SAMPLES 100                   // packets averaged per side (~1 s)
+#define CAL_MAX_NOISE_G 0.03f                  // a capture is rejected if the reading wobbled more than this (moving)
+#define CAL_MIN_SPACING_G 0.5f                 // ...or if it's within this of an earlier capture (about 30 degrees)
+#define CAL_MAX_RMS_G 0.03f                    // fit is rejected if the captures disagree by more than this
+volatile bool imuLevelReq = false;   // set by the web page; the IMU task takes the reading
+volatile bool imuLevelSave = false;  // set by the IMU task; loop() writes it to flash
+volatile float imuTiltDeg = 0;       // tilt from upright in degrees (0 = upright, 90 = on its side, 180 = upside down)
+// Dead band around the 90 degree flip, in degrees: the robot must tilt this far past sideways before it changes
+// between up and down (5 -> becomes "down" at 95 degrees of tilt, "up" again at 85). 0 = no dead band.
+#define FLIP_DEADBAND 5
+float imuOrientHyst = sinf(FLIP_DEADBAND * (float)M_PI / 180.0f);  // the same dead band as a fraction of 1 g, used in imu.ino
 
 const int RPnumReadings = 10;
 int RPreadings[RPnumReadings];
@@ -280,6 +326,7 @@ int Ytotal = 0;
 
 volatile int RP = 0;
 volatile int Y = 0;
+
 
 // Raw IMU values for the web page (written on core 0, read on core 1)
 volatile int16_t imuGx = 0, imuGy = 0, imuGz = 0;
@@ -380,6 +427,15 @@ bool imuAlive() {
   return t != 0 && (uint32_t)(millis() - t) < IMU_DROPOUT_MS;
 }
 
+// ---- Upside-down detection (drives the mixer's direction flip and the disarmed LEDs) ----
+// Uses the same up/down as the web page's Orientation arrow (imuOrient, worked out from the DMP gravity vector in
+// imu.ino): it flips at a true 90 degree tilt from the levelled upright, with the dead band set by FLIP_DEADBAND.
+// No IMU at boot, IMU lost while running, or never levelled: the robot is treated as upright.
+bool robotDown() {
+  if (!IMU_safe || !imuAlive() || !imuLevelled) return false;  // IMU missing / dropped out / not levelled -> upright
+  return imuOrient < 0;                        // 0 (not decided yet) also counts as upright
+}
+
 // true while the arm switch (channel 3) is high. Checked on the channel value alone, like mixer.ino does, so a
 // stale high reading after the link drops still counts as armed (blocking is the safe side).
 bool armSwitchHigh() {
@@ -431,7 +487,9 @@ void setup() {
 
   Serial.printf("Free stack: %d\n", uxTaskGetStackHighWaterMark(NULL));
 
-  loadTune();  // restore saved tuning values first
+  loadTune();   // restore saved tuning values first
+  loadLevel();  // and the IMU's levelled "upright" direction (before the IMU task starts)
+  loadImuCal();  // and the IMU calibrations (offsets are written to the chip in imuBegin())
 
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(I2C_CLOCK_HZ);

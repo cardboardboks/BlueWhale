@@ -4,9 +4,27 @@ void status() {
     tuneDirty = false;
     saveTune();
   }
+  if (imuOffSave) {  // IMU calibrations finished in the IMU task: store them here (flash writes stay off that task)
+    imuOffSave = false;
+    saveImuOffsets();
+  }
+  if (accCalSave) {
+    accCalSave = false;
+    saveAccCal();
+  }
+  if (imuLevelSave) {  // Level pressed and the IMU took the reading: store it (flash writes stay off the IMU task)
+    imuLevelSave = false;
+    saveLevel();
+  }
 
   // ---- Bulk text ----
-  bulkText = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + String(escs[0].lossPercent()) + "  " + String(escs[1].lossPercent()) + "\nTilt: " + String(RP) + "  Yaw: " + String(Y);
+  // line 2, per ESC: loss % since (re)connect, then drops/reinits since boot
+  String escLine = "";
+  for (int i = 0; i < NUM_ESC; i++) {
+    if (i) escLine += "  ";
+    escLine += String(escLossPct(i), 1) + "% d" + String(escDrops[i]) + "/r" + String(escReinits[i]);
+  }
+  bulkText = escLine + "\nTilt: " + (imuLevelled ? String((float)imuTiltDeg, 0) + " deg (dmp " + String((float)imuTiltDmpDeg, 0) + " acc " + String((float)imuTiltAccDeg, 0) + ")" : String("not levelled")) + "  Yaw: " + String(Y);
 
   // longest gap between loop() passes, reported once a second on the page's diagnostics line
   static uint32_t lastLoopUs = micros();
