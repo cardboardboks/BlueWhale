@@ -5,7 +5,7 @@
 
 void pre_arm_safe() {
   led(2, 1);
-  bootState = "SafeCheck";
+  setBoot("SafeCheck");
 
   // hold here until all conditions are met
   while (safe_switch == 0 || safe_sticks == 0 || safe_link == 0) {

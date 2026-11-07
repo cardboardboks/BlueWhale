@@ -222,6 +222,9 @@ void imuTask(void *arg) {
       aa.y = mAy.add(aa.y);
       aa.z = mAz.add(aa.z);
 
+      yawImuSample(gy.x, gy.y, gy.z, gravity.x, gravity.y, gravity.z);  // feed the yaw controller (yaw_pid.ino)
+      if (imuCalGyroReq) yawGyroCalSample(gy.x, gy.y, gy.z, q.w, q.x, q.y, q.z, micros());  // gyro scale calibration
+
       imuGx = gy.x;
       imuGy = gy.y;
       imuGz = gy.z;

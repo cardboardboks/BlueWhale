@@ -20,6 +20,7 @@ void mixer(float throttle, float steering) {
   float t = 0;
   float s = 0;
   int dir = 1;  // -1 in the modes that invert the throttle (used to spot a direction flip)
+  bool stab = false;  // true in the "Stab" modes: steering goes through the yaw rate controller (pid.ino)
 
   // scale and constrain inputs
   // impliment logic for auto up and reverese
@@ -85,6 +86,7 @@ void mixer(float throttle, float steering) {
   if (txchannel[6] == 1000 && !robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(12, 1);
     modeString = "Stab Up Fwd";
+    stab = true;
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
   } else {
@@ -95,6 +97,7 @@ void mixer(float throttle, float steering) {
   if (txchannel[6] == 2000 && !robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(13, 1);
     modeString = "Stab Up Rev";
+    stab = true;
     dir = -1;
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
@@ -106,6 +109,7 @@ void mixer(float throttle, float steering) {
   if (txchannel[6] == 1000 && robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(14, 1);
     modeString = "Stab Dwn Fwd";
+    stab = true;
     dir = -1;
     t = (deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f))) * -1;
     s = deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN;
@@ -117,12 +121,19 @@ void mixer(float throttle, float steering) {
   if (txchannel[6] == 2000 && robotDown() && txchannel[3] == 2000 && txchannel[4] == 1000) {
     led(15, 1);
     modeString = "Stab Dwn Rev";
+    stab = true;
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
     s = (deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)) * STEER_GAIN);
   } else {
     led(15, 0);
   }
 
+
+  // Yaw stabilisation: the steering stick becomes a yaw rate request and the controller does the steering.
+  // Outside the Stab modes it's reset, so switching in is bumpless.
+  if (stab) s = yawStab(deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)),
+                       deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f)));
+  else yawStabReset();
 
   // Differential mix
   float left = t + s;

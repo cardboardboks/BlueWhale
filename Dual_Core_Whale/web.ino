@@ -20,6 +20,7 @@ void web() {
   if (millis() - lastCleanupMs >= 1000) {
     lastCleanupMs = millis();
     ws.cleanupClients();
+    applyWifiPower();  // WiFi Power box changed?
     dbgMaxLoopGapUs = maxGapUs;
     snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk \ngap %.1fms json %.1fms esc %.1fms | ws %u\nimu read %.1fms late %u  cnt %.1fms\nfifo %u multi %u  bad %u (on late reads %u) last qn %.2f\nI2C err %u rec %u ovf %u",
              (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
@@ -177,7 +178,7 @@ String getSerializedData() {
   cal["sides"] = (int)sideMask;
   cal["n"] = (int)calN;
   if (accCalValid) cal["rms"] = (float)accCalRms;
-  cal["busy"] = imuCalOffReq || imuCalSideReq || imuCalFactoryReq;
+  cal["busy"] = imuCalOffReq || imuCalSideReq || imuCalFactoryReq || imuCalGyroReq;
   cal["msg"] = (const char *)imuCalMsg;                     // false = never levelled: the page shows NOT LEVELLED
   imu["ud"] = (int)imuOrient;     // up/down arrow
   imu["lr"] = (int)imuDirection;  // left/right arrow
@@ -197,6 +198,11 @@ String getTuneNames() {
   JsonDocument doc;
   JsonArray names = doc["names"].to<JsonArray>();
   for (int i = 0; i < NUM_TUNE; i++) names.add(tuneName[i]);
+  JsonArray help = doc["help"].to<JsonArray>();  // text for the ? next to each box
+  for (int i = 0; i < NUM_TUNE; i++) help.add(tuneHelp[i]);
+  doc["groups"] = tuneGroups;  // how the boxes are split into sections
+  JsonArray choice = doc["choice"].to<JsonArray>();  // "" = number box, else the dropdown's options
+  for (int i = 0; i < NUM_TUNE; i++) choice.add(tuneChoice[i] ? tuneChoice[i] : "");
   String output;
   serializeJson(doc, output);
   return output;
@@ -220,6 +226,7 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
         else if (len == 7 && memcmp(data, "cal_off", 7) == 0) imuCalOffReq = true;
         else if (len == 7 && memcmp(data, "cal_fac", 7) == 0) imuCalFactoryReq = true;
         else if (len == 8 && memcmp(data, "cal_side", 8) == 0) imuCalSideReq = true;
+        else if (len == 8 && memcmp(data, "cal_gyro", 8) == 0) imuCalGyroReq = true;
       }
       // "Level" button: robot sitting flat and right way up -> that becomes the IMU's upright direction
       else if (len == 5 && memcmp(data, "level", 5) == 0) {
@@ -234,6 +241,17 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
           modeString = "Rebooting";
           rebootAtMs = millis() + 500;
           rebootPending = true;
+        }
+      }
+      // "Load defaults" button: every number box back to tuneDefault[] (text boxes - Name, WiFi - are kept)
+      else if (len == 8 && memcmp(data, "defaults", 8) == 0) {
+        if (armSwitchHigh()) {
+          client->text("{\"blocked\":\"params\"}");
+        } else {
+          for (int i = NUM_TUNE_STR; i < NUM_TUNE; i++)
+            if (!yawKeepOnDefaults(i)) tuneVal[i] = tuneDefault[i];  // calibrated values (Gyro Scale) are kept
+          tuneChangedMs = millis();
+          tuneDirty = true;  // saved to flash shortly after, like any edit
         }
       }
       // armed: tuning values are locked, whatever the page sends
@@ -278,6 +296,26 @@ void pushWeb() {
   ws.cleanupClients();
 }
 
+// WiFi transmit power from the WiFi Power box; only touches the radio when the setting changes. Called from web().
+void applyWifiPower() {
+  static int last = -1;
+  int v = (int)lroundf(tuneVal[T_WIFI_POWER]);
+  if (v != 1 && v != 2) v = 3;
+  if (v == last) return;
+  last = v;
+  WiFi.setTxPower(v == 1 ? WIFI_POWER_8_5dBm : v == 2 ? WIFI_POWER_15dBm : WIFI_POWER_19_5dBm);
+}
+
+// true if channel 5 is held high at power-up (transmitter on): start with the default WiFi network
+bool wifiDefaultsHeld() {
+  for (uint32_t t0 = millis(); millis() - t0 < 600;) {
+    crsf_rx();
+    if (crsf.isLinkUp() && txchannel[ESC_REBOOT_CH] > ESC_REBOOT_US) return true;
+    delay(5);
+  }
+  return false;
+}
+
 // Start the WiFi access point, the web server and the WebSocket. Called once from setup().
 void webBegin() {
   Serial.println("\nConfiguring Access Point...");
@@ -287,8 +325,19 @@ void webBegin() {
   if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
     Serial.println("Failed to configure AP IP address");
   }
-  WiFi.softAP(ssid, password);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  // network name / password from the SSID and Password boxes (empty or invalid = the defaults above)
+  const char *apSsid = tuneStr[2][0] ? tuneStr[2] : ssid;
+  size_t pl = strlen(tuneStr[3]);
+  const char *apPass = (pl >= 8 && pl <= 63) ? tuneStr[3] : password;
+  if (pl > 0 && pl < 8) Serial.println("WiFi password box is under 8 characters - using the default");
+  if (wifiDefaultsHeld()) {  // way back in if the saved network is forgotten
+    apSsid = ssid;
+    apPass = password;
+    Serial.println("Channel 5 held at power-up: default WiFi network this boot");
+  }
+  WiFi.softAP(apSsid, apPass);
+  Serial.printf("WiFi network: %s\n", apSsid);
+  applyWifiPower();
 
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
