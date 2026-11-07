@@ -5,7 +5,7 @@
  *
  * 0x42 DATA  (35-byte payload, all big-endian)
  *   [0]      uint8   version (3)
- *   [1..2]   uint16  average voltage   mV   (over ESCs that are reporting)
+ *   [1..2]   uint16  average voltage   mV   (battery divider if fitted, else average over ESCs that are reporting)
  *   [3..6]   int32   total current     cA (0.01 A)
  *   [7..10]  uint32  uptime            seconds
  *   then for ESC1..ESC4, 6 bytes each, starting at [11]:
@@ -78,7 +78,8 @@ void readSensors() {
       e.voltage = e.current = e.temp = 0;  // not fitted / not reporting
     }
   }
-  telem.avgVoltage = (n > 0) ? vSum / n : 0;
+  // battery divider when fitted (live with the motors stopped), otherwise the average of the reporting ESCs
+  telem.avgVoltage = vbatValid() ? vbat : ((n > 0) ? vSum / n : 0);
   telem.totalAmps = iSum;
 
   setStatusString(telem.mode, modeString.c_str());

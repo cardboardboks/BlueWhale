@@ -114,10 +114,9 @@ String getSerializedData() {
   }
   JsonObject avg = doc["avg"].to<JsonObject>();
   avg["n"] = nEsc;
-  if (nEsc > 0) {
-    avg["v"] = sumV / nEsc;
-    avg["a"] = sumA;  // total current of the reporting ESCs (not averaged); the "a" key name is just historical
-  }
+  if (vbatValid()) avg["v"] = (float)vbat;    // battery divider: valid with the motors stopped
+  else if (nEsc > 0) avg["v"] = sumV / nEsc;  // no divider fitted: fall back to the ESC average
+  if (nEsc > 0) avg["a"] = sumA;              // total current of the reporting ESCs (not averaged); the "a" key name is just historical
 
   // Receiver
   JsonObject rx = doc["rx"].to<JsonObject>();

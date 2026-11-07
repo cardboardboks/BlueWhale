@@ -48,8 +48,12 @@ void updateRecords() {
     if (isfinite(t) && t > recMaxTemp) recMaxTemp = t;
     if (a > recMaxA) recMaxA = a;
     sumA += a;
-    if (v > 1.0f && (recMinV == 0 || v < recMinV)) recMinV = v;
+    if (!vbatValid() && v > 1.0f && (recMinV == 0 || v < recMinV)) recMinV = v;  // ESC voltage only when there's no divider
     sumSpd += fabsf(escSpeed(i));
+  }
+  if (vbatValid()) {  // battery divider, recorded even with no ESC reporting
+    float vb = vbat;
+    if (recMinV == 0 || vb < recMinV) recMinV = vb;
   }
   if (n > 0) {
     if (sumA > recMaxTotalA) recMaxTotalA = sumA;

@@ -434,22 +434,27 @@ function onMessage(event) {
     set('v-rs', f(d.rec.s, 1) + " km/h");
   }
 
-  // average over ESCs that are giving data, coloured for 6S battery state
-  const av = $('v-avgv');
-  if (d.avg && d.avg.n > 0) {
+  // Avg Volts: from the battery divider when fitted (live even with the motors stopped), else the ESC average.
+  // Coloured for 6S battery state. Total Amps: only from ESCs that are reporting.
+  // Each keeps its last value, greyed out, when its source goes quiet.
+  const av = $('v-avgv'), aa = $('v-avga');
+  if (d.avg && d.avg.v !== undefined) {
     const perCell = d.avg.v / CELLS;
     av.textContent = f(d.avg.v, 1) + " V";
     av.className = "v " + (perCell < CELL_LOW ? "bad" : perCell < CELL_WARN ? "warn" : "good");
-    set('v-avga', f(d.avg.a, 1) + " A");
-    $('v-avga').className = "v";
-    lastAvgV = av.textContent; lastAvgA = $('v-avga').textContent;
+    lastAvgV = av.textContent;
   } else if (lastAvgV) {
-    // no ESC reporting: keep the last averages, greyed out
     av.textContent = lastAvgV; av.className = "v stale";
-    set('v-avga', lastAvgA); $('v-avga').className = "v stale";
   } else {
     av.textContent = "--"; av.className = "v";
-    set('v-avga', "--");
+  }
+  if (d.avg && d.avg.n > 0) {
+    aa.textContent = f(d.avg.a, 1) + " A"; aa.className = "v";
+    lastAvgA = aa.textContent;
+  } else if (lastAvgA) {
+    aa.textContent = lastAvgA; aa.className = "v stale";
+  } else {
+    aa.textContent = "--"; aa.className = "v";
   }
 
   if (d.rx) {
