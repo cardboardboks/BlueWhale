@@ -168,6 +168,47 @@ float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what
 // An ESC with no valid telemetry for this long (microseconds) is shown as not reporting
 #define ESC_STALE_US 1000000
 
+// ---- ESC reconnect ----
+// After boot, an ESC that stops answering (power glitch, plug pulled, ESC reset) is marked LOST and held at zero
+// throttle. When it answers again it is kept at zero for ESC_REARM_MS so AM32 re-arms, then extended telemetry (EDT)
+// is re-enabled and its link stats restart from 0. Throttle is then ramped from stopped up to whatever the sticks
+// are currently commanding over ESC_RAMP_MS, so the ESC picks up smoothly instead of jumping straight to full command.
+#define ESC_LOST_US 250000  // no telemetry for this long (microseconds) = ESC lost
+#define ESC_REARM_MS 1000   // zero throttle for this long after it comes back, before re-enabling EDT
+#define ESC_EDT_TRIES 3     // EDT enable is sent this many times...
+#define ESC_EDT_GAP_MS 300  // ...this far apart, in case the first one arrives before the ESC is ready
+#define ESC_RAMP_MS 300     // then throttle ramps from stopped to the live command over this long (0 = no ramp)
+
+// Manual ESC reboot: hold channel 5 above ESC_REBOOT_US for ESC_REBOOT_HOLD_MS and every ESC is reset, whatever
+// state it's in. DShot has no reboot command, so the signal is cut for ESC_CUT_MS (long enough for AM32 to
+// decide the signal is gone and disarm), then each ESC goes through the normal reconnect: re-arm, EDT, ramp.
+#define ESC_REBOOT_CH 5
+#define ESC_REBOOT_US 1800
+#define ESC_REBOOT_HOLD_MS 1000
+#define ESC_CUT_MS 1000  // must be well over ESC_LOST_US
+
+// LEDs that belong to each ESC: they blink orange over the normal pattern while that ESC is lost / re-arming.
+// Assumes LEDs 0-5 are on the ESC1 (left) side and 6-11 on the ESC2 (right) side. Set a count to 0 for no LEDs.
+const int ESC_LED_FIRST[MAX_ESC] = { 0, 6, 0, 0 };
+const int ESC_LED_COUNT[MAX_ESC] = { 6, 6, 0, 0 };
+#define ESC_LED_COLOR 0xFF5000  // orange
+#define ESC_LED_BLINK_MS 125    // on for this long, off for this long
+
+enum : uint8_t { ESC_OK = 0,
+                 ESC_LOST,
+                 ESC_REARM,
+                 ESC_RAMP,
+                 ESC_CUT };
+volatile uint8_t escState[MAX_ESC] = { 0 };   // ESC_OK / ESC_LOST / ESC_REARM / ESC_RAMP / ESC_CUT
+uint32_t escStateMs[MAX_ESC] = { 0 };         // millis() when the current state started
+uint8_t escEdtTries[MAX_ESC] = { 0 };         // EDT enables sent during this re-arm
+volatile uint32_t escDrops[MAX_ESC] = { 0 };  // times this ESC was lost since boot
+volatile uint32_t escReinits[MAX_ESC] = { 0 };  // times it was successfully re-initialised
+volatile uint32_t escFramesSent[MAX_ESC] = { 0 };  // DShot frames sent since the last (re)connect
+volatile uint32_t escFramesGood[MAX_ESC] = { 0 };  // ...that got a telemetry reply
+uint32_t escLastSendUs[MAX_ESC] = { 0 };           // micros() at the start of the last send (0 = none yet)
+bool escMonitorOn = false;                         // switched on in setup() once the ESCs have booted
+
 volatile bool otaInProgress = false;
 unsigned long lastUpdate = 0;
 #define WEB_UPDATE_MS 50  // milliseconds between web page updates (10 = 100 per second). Higher = less CPU, jerkier page
@@ -501,6 +542,7 @@ void setup() {
 
   bootState = "Enabling EDT";
   for (int i = 0; i < NUM_ESC; i++) escs[i].command(DSHOT_CMD_EDT_ENABLE);
+  escMonitorStart();  // from here on, an ESC that drops out is re-initialised automatically (drive.ino)
 
   bootState = "CPU monitor init";
   CpuMonitorConfig cpucfg;

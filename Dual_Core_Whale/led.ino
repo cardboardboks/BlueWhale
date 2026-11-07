@@ -83,6 +83,14 @@ void ledTask(void *pvParameters) {
       }
     }
 
+    // ---- ESC lost / rebooting: blink orange on that ESC's side, over whatever is showing (not during an update) ----
+    if (!otaInProgress) {
+      bool on = (millis() / ESC_LED_BLINK_MS) & 1;
+      for (int i = 0; i < NUM_ESC; i++) {
+        if (escLedAlert(i) && ESC_LED_COUNT[i] > 0) static_led(ESC_LED_FIRST[i], ESC_LED_COUNT[i], on ? ESC_LED_COLOR : 0x000000);
+      }
+    }
+
     showLeds();
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(25));
   }
