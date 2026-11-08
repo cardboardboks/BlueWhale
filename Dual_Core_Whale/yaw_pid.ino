@@ -43,6 +43,11 @@
 #define T_YAW_AIR 24     // airmode: 1 = keep correcting with both sticks centred, 0 = hands off when idle
 #define T_YAW_IBAND 25   // idle band, deg/s: with both sticks centred, rate errors smaller than this are ignored
 #define T_YAW_IBLEED 26  // I bleed, per second: while no turn is asked for, the I term fades at this rate
+#define T_HOLD_ON 27     // heading hold: 1 = steer back to the heading held when the stick was centred, 0 = off
+#define T_HOLD_K 28      // hold strength, per second: return turn rate (°/s) per degree of heading error
+#define T_HOLD_MAX 29    // fastest return turn, °/s
+#define T_HOLD_BAND 30   // at standstill, rest when within this many degrees of the held heading
+#define HDG_NOISE_DPS 1.5f  // measured rates below this are ignored when adding up the heading (no drift creep)
 
 // ---- telemetry (shown in Bulk Text) ----
 volatile bool yawActive = false;  // the controller is steering right now
@@ -50,6 +55,8 @@ volatile float yawSpDps = 0;      // requested rate after expo / accel limiting
 volatile float yawMeasDps = 0;    // measured rate (filtered, same sign as the stick)
 volatile float yawOut = 0;        // steering output, -1..1
 volatile float yawITerm = 0;      // the I term's share of that
+volatile bool yawHolding = false; // heading hold is holding a heading right now
+volatile float yawHdgErr = 0;     // held heading minus the current one, degrees
 
 // ---- from the IMU task (core 0): yaw rate about the world vertical, deg/s ----
 volatile float imuYawRate = 0;
@@ -138,7 +145,8 @@ bool yawKeepOnDefaults(int i) {
 // Bulk Text line. Measured rate is in the stick's sign: steer right -> it should go positive (see Yaw Dir).
 String yawStatusLine() {
   if (yawActive)
-    return "Yaw °/s sp " + String((float)yawSpDps, 0) + " meas " + String((float)yawMeasDps, 0) + " out " + String((float)yawOut, 2) + " I " + String((float)yawITerm, 2);
+    return "Yaw °/s sp " + String((float)yawSpDps, 0) + " meas " + String((float)yawMeasDps, 0) + " out " + String((float)yawOut, 2) + " I " + String((float)yawITerm, 2) +
+           (yawHolding ? " hdg " + String((float)yawHdgErr, 1) + "°" : String(""));
   float now = -(float)imuYawRate * ((tuneVal[T_YAW_DIR] < 0) ? -1.0f : 1.0f);
   return "Yaw " + String(now, 0) + " °/s (stab off)";
 }
@@ -155,6 +163,9 @@ static uint32_t yawLastSeq = 0;
 static uint32_t yawLastUs = 0;
 static bool yawRunning = false;  // false = next sample starts fresh (no D kick, no dt guess)
 static bool yawLastDown = false;
+static float yawHeading = 0;     // heading from adding up the measured rate, degrees (only differences matter)
+static float yawHdgTarget = 0;   // heading being held
+static bool yawHold = false;     // holding a heading
 
 // first-order low-pass blend factor for cut-off fc (Hz) at time step dt (s); fc <= 0 = no filtering
 static float lpfAlpha(float fc, float dt) {
@@ -171,6 +182,9 @@ void yawStabReset() {
   yawU = 0;
   yawActive = false;
   yawITerm = 0;
+  yawHold = false;
+  yawHolding = false;
+  yawHdgErr = 0;
 }
 
 // stick: steering stick after the deadband, -1..1. throttle: the throttle after the deadband, -1..1 (only used to
@@ -221,9 +235,37 @@ float yawStab(float stick, float throttle) {
   if (fresh) yawMeasF = meas;
   else yawMeasF += lpfAlpha(tuneVal[T_GYRO_LPF], dt) * (meas - yawMeasF);
 
+  // ---- heading: add up the measured rate (tiny rates are gyro noise/drift: ignored, so the heading can't creep) ----
+  if (fresh) yawHeading = 0;
+  else if (fabsf(yawMeasF) > HDG_NOISE_DPS) yawHeading += yawMeasF * dt;
+
   // ---- setpoint: expo, max rate, max rotational acceleration ----
   float st = stick * (1.0f - expo) + stick * stick * stick * expo;
   float target = st * maxRate;
+
+  // ---- heading hold: with the stick centred, once the turn has finished, hold that heading ----
+  float bleed = tuneVal[T_YAW_IBLEED];
+  float hdgErr = 0;
+  if (tuneVal[T_HOLD_ON] >= 0.5f && noTurn) {
+    if (!yawHold && !fresh && fabsf(yawSp) < 1.0f) {  // the requested turn has wound down to nothing: take this heading
+      yawHold = true;
+      yawHdgTarget = yawHeading;
+    }
+    if (yawHold) {
+      hdgErr = yawHdgTarget - yawHeading;
+      if (bleed > 0) {  // I Bleed also lets the held heading drift to where the robot is (so a pin isn't fought forever)
+        yawHdgTarget -= hdgErr * (1.0f - expf(-bleed * dt));
+        hdgErr = yawHdgTarget - yawHeading;
+      }
+      float hb = max((float)tuneVal[T_HOLD_BAND], 0.0f);
+      float he = (idle && fabsf(hdgErr) <= hb) ? 0.0f : hdgErr;  // at standstill, close enough = rest
+      float hmax = max((float)tuneVal[T_HOLD_MAX], 0.0f);
+      target = constrain(tuneVal[T_HOLD_K] * he, -hmax, hmax);  // turn back toward the held heading
+    }
+  } else {
+    yawHold = false;  // stick moved (or hold off): it takes a new heading when the stick is centred again
+  }
+
   if (fresh) {
     yawSp = yawMeasF;  // bumpless: start the ramp from what the robot is actually doing
     yawSpPrev = yawSp;
@@ -242,7 +284,7 @@ float yawStab(float stick, float throttle) {
   // ---- PID on the normalised error ----
   float errDps = yawSp - yawMeasF;
   float band = tuneVal[T_YAW_IBAND];
-  if (idle && band > 0) {  // idle band: ignore small errors at standstill (no twitching, no slow creep from gyro drift)
+  if (idle && band > 0 && !yawHold) {  // idle band: ignore small errors at standstill (heading hold has its own band)
     float m = fabsf(errDps) - band;
     errDps = (m > 0) ? copysignf(m, errDps) : 0.0f;  // subtract rather than cut, so there's no step at the edge
   }
@@ -256,8 +298,10 @@ float yawStab(float stick, float throttle) {
 
   float ff = kff * (yawSp / maxRate) + kffa * (spDot / maxRate);
 
-  float bleed = tuneVal[T_YAW_IBLEED];
-  if (noTurn && bleed > 0) yawI *= expf(-bleed * dt);  // I bleed: slowly let go of a held heading (stops fighting a pin forever)
+  if (noTurn && bleed > 0) {  // I bleed: slowly let go of a held heading (stops fighting a pin forever)
+    yawI *= expf(-bleed * dt);
+    if (fabsf(yawI) < 0.002f) yawI = 0;  // fully let go: no crumb left to nudge the output
+  }
 
   float base = ff + pTerm + dTerm;
   float iNew = (ki > 0) ? constrain(yawI + ki * e * dt, -iLim, iLim) : 0.0f;
@@ -267,6 +311,13 @@ float yawStab(float stick, float throttle) {
   yawI = iNew;
   u = constrain(base + yawI, -oLim, oLim);
 
+  // Idle quiet zone: both sticks centred and the robot turning slower than the idle band -> output exactly 0.
+  // In 3D DShot any output off 1500, even by one count, jumps to the ESC's lowest forward/reverse step, so the
+  // crumbs from gyro noise through D (and a bleeding I) made the motors twitch. I is kept (still bleeding), so a
+  // knock bigger than the band gets the full correction straight away.
+  // With heading hold, it also has to be within the Hold Band of its heading.
+  if (idle && band > 0 && fabsf(yawMeasF) < band && (!yawHold || fabsf(hdgErr) <= max((float)tuneVal[T_HOLD_BAND], 0.0f))) u = 0.0f;
+
   yawU = u;
   yawRunning = true;
   yawActive = true;
@@ -274,5 +325,7 @@ float yawStab(float stick, float throttle) {
   yawMeasDps = yawMeasF;
   yawOut = u;
   yawITerm = yawI;
+  yawHolding = yawHold;
+  yawHdgErr = hdgErr;
   return u;
 }

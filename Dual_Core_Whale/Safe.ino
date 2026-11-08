@@ -15,11 +15,11 @@ void pre_arm_safe() {
       if (!otaInProgress) {
       // drve the crital functions to be able to chceck health
       // force esc's to disarmed
-      crsf_rx();
-      crsf_tx();  // keep telemetry going while waiting in the safe check
+      // (the receiver and telemetry run in the CRSF task, crsf.ino)
       drive_escs(0, 0);
       status();
       web();
+      crsfSetStrings(false);  // Mode / Boot text for the radio telemetry
 
       // make sure arm switch is off
       if (txchannel[3] == 1000) {
@@ -43,6 +43,8 @@ void pre_arm_safe() {
         safe_link = 0;
       }
     }
+
+    vTaskDelay(pdMS_TO_TICKS(1));  // same 1 ms yield as loop(): without it this loop kept core 1 at 100%
   }
   safed = 1;
   led(2, 0);

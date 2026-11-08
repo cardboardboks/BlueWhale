@@ -66,6 +66,9 @@ th.off { opacity: .3; }
 #c-esc th:last-child, #c-esc td:last-child { padding-left: .2rem; }
 
 [hidden] { display: none !important; }
+/* iPhone full-screen: a solid strip behind the status bar, so pages that scroll (tuning, guide) slide under it
+   instead of showing through the translucent bar */
+body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: var(--bg); z-index: 30; pointer-events: none; }
 #c-status h2 { display: flex; justify-content: space-between; align-items: center; }
 .nav { font: inherit; font-size: .8rem; text-transform: none; letter-spacing: 0; padding: 0 8px; border-radius: 6px;
        border: 1px solid rgba(10,132,255,.5); background: rgba(10,132,255,.18); color: #64b0ff; }
@@ -153,7 +156,8 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
 .dot.on { background: var(--good); box-shadow: 0 0 6px var(--good); }
 
 .bulk { font-family: ui-monospace, Menlo, monospace; font-size: .9rem; color: var(--val);
-        white-space: pre-wrap; word-break: break-word; min-height: 2.2em; max-height: 5em; overflow-y: auto; }
+        white-space: pre-wrap; word-break: break-word; min-height: 2.2em; max-height: 9em; overflow-y: auto;
+        -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .good { color: var(--good) !important; } .warn { color: var(--warn) !important; } .bad { color: var(--bad) !important; }
 
 /* ---------- landscape phone: short screen -> 4 columns, no title ---------- */
@@ -168,7 +172,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
   .dots { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px 2px; }
   .dot { width: .7rem; height: .7rem; }
   .dc { gap: 2px; }
-  .bulk { max-height: 4.5em; }
+  .bulk { max-height: 7em; }
   .rxtop { grid-template-columns: 1fr 1fr; }
   .chs { grid-template-columns: repeat(4, 1fr); }
   .tgrid { grid-template-columns: repeat(4, 1fr); }
@@ -189,7 +193,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
   .dots { grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 8px 6px; padding-top: 6px; }   /* 2 rows of 10: always fits, whatever the window width */
   .dot { width: 1.1rem; height: 1.1rem; }
   .ch { padding: 4px 8px; }
-  .bulk { max-height: 12em; }
+  .bulk { max-height: 18em; }
   .tgrid { grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .tv { padding: 8px 14px; }
   .ttop b { font-size: 1.8rem; }
@@ -354,8 +358,13 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <li><b>Expo</b> - feel only, for finer aiming around centre. Doesn't change the loop.</li>
       <li><b>Out Limit</b> - raise to 1.0 once it behaves. Below the FF value it caps full-stick turns too.</li>
       <li><b>Standstill: Airmode, Idle Band, I Bleed</b> - last, with the robot sitting still and armed. Airmode on = it fights hits with the sticks centred.
-        If it twitches or slowly creeps round while still, raise Idle Band (2 to 5 °/s). If it fights a pin too long, raise I Bleed.
+        If it twitches or slowly creeps round while still, raise Idle Band (5 to 15 °/s). If it fights a pin too long, raise I Bleed.
         <br><i>Affects:</i> standstill only (I Bleed: whenever no turn is asked for). Idle Band too big = small knocks at standstill aren't corrected.</li>
+      <li><b>Heading Hold: Hold Strength, Hold Max, Hold Band</b> - once the rate loop above is good (heading hold rides on top of it).
+        Knock the robot round with the sticks centred: it should turn back to where it was pointing and stop. Raise Hold Strength until it returns briskly;
+        if it swings past and back, lower it (or add a little D). Hold Max caps how fast it turns back after a big knock. If it hunts back and forth at rest, raise Hold Band.
+        Bulk Text shows <code>hdg</code> = degrees off the held heading.
+        <br><i>Affects:</i> needs P set first - a weak rate loop can't follow the hold. I Bleed also lets the held heading slowly give in to a pin.</li>
     </ol>
   </div>
 
@@ -388,6 +397,8 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <tr><td>Full stick turns slower than it used to</td><td>Max Rate too low, or Out Limit below 1</td></tr>
       <tr><td>Twitches or creeps round while sitting still</td><td>Raise Idle Band; if it creeps, redo Calibrate offsets</td></tr>
       <tr><td>Keeps fighting long after being pinned</td><td>Raise I Bleed, or lower I Limit</td></tr>
+      <tr><td>Swings past its heading and back after a knock</td><td>Lower Hold Strength, or add a little D</td></tr>
+      <tr><td>Slowly curves while driving straight with the stick centred</td><td>Heading hold following gyro drift - redo Calibrate offsets (flat), robot still</td></tr>
       <tr><td>out sits at ±1 a lot</td><td>Max Rate higher than the robot can do - lower it</td></tr>
     </table>
   </div>
@@ -562,7 +573,7 @@ function setLocked(l, rebootLocked) {
 }
 
 // ---- websocket ----
-let websocket, lastMsg = 0;
+let websocket, lastMsg = 0, lastDbg = "";
 function initWebSocket() {
   websocket = new WebSocket(`ws://${window.location.host}/ws`);
   websocket.onclose = () => setTimeout(initWebSocket, 2000);
@@ -577,9 +588,13 @@ function onMessage(event) {
 
   set('v-mode', d.mode);
   set('v-boot', d.boot);
-  $('v-bulk').textContent = (d.bulk || "") + (d.dbg ? "\n" + d.dbg : "");
+  if (d.dbg !== undefined) lastDbg = d.dbg;   // diagnostics only come in every 10th update: keep showing the last ones
+  {  // keep the box's scroll position (replacing the text jumps it back to the top on iPhone), and only touch it if it changed
+    const vb = $('v-bulk'), bt = (d.bulk || "") + (lastDbg ? "\n" + lastDbg : "");
+    if (vb.textContent !== bt) { const st = vb.scrollTop; vb.textContent = bt; vb.scrollTop = st; }
+  }
 
-  if (d.cpu) { set('v-c0', f(d.cpu[0],1)+" %"); set('v-c1', f(d.cpu[1],1)+" %"); set('v-ca', f(d.cpu[2],1)+" %"); }
+  if (d.cpu) { set('v-c0', f(d.cpu[0],3)+" %"); set('v-c1', f(d.cpu[1],3)+" %"); set('v-ca', f(d.cpu[2],3)+" %"); }   // 3 decimals
 
   if (d.up !== undefined) {
     const u = d.up, days = Math.floor(u / 86400), p2 = x => String(x).padStart(2, '0');
@@ -749,7 +764,7 @@ $('m-yes').onclick = () => {
 function fit() {
   const r = document.documentElement;
   r.style.removeProperty('--fs');
-  if (!$('page-guide').hidden) return;   // the guide is meant to scroll: keep the normal text size
+  if ($('page-main').hidden) return;   // only the main page shrinks to fit; tuning and the guide scroll at normal size
   let fs = parseFloat(getComputedStyle(r).getPropertyValue('--fs')) || 12;
   while ((r.scrollHeight > window.innerHeight + 1 || r.scrollWidth > window.innerWidth + 1) && fs > 7) {
     fs -= 0.25;

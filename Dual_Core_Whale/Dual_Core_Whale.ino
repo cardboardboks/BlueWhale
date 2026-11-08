@@ -24,6 +24,45 @@
 
 // The web dashboard (WiFi AP, web server, WebSocket, JSON) is in web.ino, and the page itself is in web_page.h.
 
+// Functions defined in the other tabs and used before them. The Arduino IDE normally declares these itself, but its
+// scanner can miss some, so they're listed here explicitly.
+void escTaskStart();                        // drive.ino
+void escTick();                             // drive.ino
+void escRequestEdt(int i);                  // drive.ino
+void escMonitorStart();                     // drive.ino
+int escMonitorUpdate(int i, int rawThr);    // drive.ino
+void escRebootAll();                        // drive.ino
+bool escAllowed(int i);                     // drive.ino
+bool escLedAlert(int i);                    // drive.ino
+float escLossPct(int i);                    // drive.ino
+void escResetStats(int i);                  // drive.ino
+uint32_t escAgeUs(int i);                   // drive.ino: telemetry, from the DShot task's copy
+float escVolts(int i);                      // drive.ino
+float escAmps(int i);                       // drive.ino
+float escTempC(int i);                      // drive.ino
+float escRpm(int i);                        // drive.ino
+void crsfTaskStart();                       // crsf.ino
+void crsfSetStrings(bool force);            // crsf.ino
+void loadLevel();                           // tuning.ino
+void saveLevel();                           // tuning.ino
+void loadImuCal();                          // tuning.ino
+void saveImuOffsets();                      // tuning.ino
+void saveAccCal();                          // tuning.ino
+void calAddPoint(const float sum[3], const float sq[3], uint16_t n);  // imu.ino
+void applyWifiPower();                      // web.ino
+bool wifiDefaultsHeld();                    // web.ino
+float yawStab(float stick, float throttle); // yaw_pid.ino
+void yawStabReset();                        // yaw_pid.ino
+void yawImuSample(float gx, float gy, float gz, float grx, float gry, float grz);  // yaw_pid.ino
+void yawGyroCalSample(float gx, float gy, float gz, float qw, float qx, float qy, float qz, uint32_t us);  // yaw_pid.ino
+bool yawKeepOnDefaults(int i);              // yaw_pid.ino
+String yawStatusLine();                     // yaw_pid.ino
+const char *resetReasonShort();             // status.ino
+float smoothCpu(float raw, float avg);      // status.ino
+String buildBulkText();                     // status.ino
+String getSerializedData(bool full);        // web.ino
+static float minOutput(float v, float mo);  // mixer.ino
+
 spi_device_handle_t ledDev;  // SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);  // Set main loop stack size to 16 KB
@@ -43,6 +82,7 @@ String bootTag = "";
 uint32_t bootCount = 0;
 void setBoot(const char *stage) {
   bootState = String(stage) + bootTag;
+  crsfSetStrings(true);  // so the radio shows the boot stage straight away
 }
 
 // Short version for the radio telemetry (15 characters max): "Run PANIC #12" once running, else the stage name
@@ -50,7 +90,8 @@ String bootShort() {
   if (!bootState.startsWith("Running")) return bootState.substring(0, bootState.indexOf(" ("));
   return String("Run ") + resetReasonShort() + " #" + bootCount;
 }
-String bulkText = "";           // <- free text box, put anything in here
+String bulkText = "";           // <- your own extra text for the Bulk Text box (added under the built-in lines). Set it
+                                //    from loop() only - the page reads it while building its update.
 
 #define ARRAY_SIZE 20
 volatile bool modeArray[ARRAY_SIZE];  // <- set any slot true to light its green dot
@@ -60,19 +101,22 @@ volatile float core0 = 0;
 volatile float core1 = 0;
 volatile float coreA = 0;
 
-// variables that decay slowly
-volatile float core0Peak = 0;
-volatile float core1Peak = 0;
-volatile float coreAveragePeak = 0;  // Added system average peak-hold tracker
+// smoothed CPU load (rolling average of the 10 ms samples)
+volatile float core0Avg = 0;
+volatile float core1Avg = 0;
+volatile float coreAllAvg = 0;
 
-// decay rate coefficient (Value between 0.0 and 1.0)
-// lower value = slower decay (e.g., 0.05 is very smooth, 0.20 is faster)
-const float PEAK_DECAY_ALPHA = 0.01f;
+// CPU smoothing, per 10 ms sample (0 to 1): lower = smoother but slower. 0.01 ≈ 1 s to settle, 0.005 ≈ 2 s,
+// 0.003 ≈ 3 s. Don't go much lower: 0.0001 takes minutes to settle (and starts from 0 at boot, so it reads low).
+// Same speed up and down, so a single busy moment barely shows; sustained load still does.
+const float CPU_SMOOTH_ALPHA = 0.005f;
 
 // loops stats
 static uint32_t maxGapUs = 0;
 static uint32_t jsonMaxUs = 0;  // longest time spent building + sending a web update this second
-static uint32_t escMaxUs = 0;   // longest time spent in the ESC send block this second
+uint32_t wsSkipped = 0;    // page updates skipped this second because the last one hadn't gone out yet
+uint32_t wsLastBytes = 0;  // size of the last page update
+static volatile uint32_t escMaxUs = 0;  // longest DShot task pass this second (written by the DShot task)
 
 // arrows shown in the IMU box
 volatile int8_t imuOrient = 0;     // up/down arrow:    1 = up (arrow up),    -1 = down (arrow down),  0 = blank
@@ -132,16 +176,19 @@ void vbatUpdate() {
 // ---- Whale Tuning ----
 // Rename them here. Use tuneVal[n] anywhere in your code; editing a box on the page changes it live.
 // Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
-#define NUM_TUNE 27
+#define NUM_TUNE 32
+#define T_MIN_OUT 31  // Min Output %: smallest non-zero drive output per wheel (mixer.ino)
 const char *tuneName[NUM_TUNE] = {
   "Name", "sysID", "SSID", "Password", "Blank",
   "WiFi Power", "P", "I", "D", "Max Rate °/s",
   "Max Accel °/s²", "FF", "FF Accel", "Expo", "Gyro LPF Hz",
   "D LPF Hz", "ESC1 Dir", "ESC2 Dir", "ESC3 Dir", "ESC4 Dir",
   "I Limit", "Out Limit", "Yaw Dir", "Gyro Scale",
-  "Airmode", "Idle Band °/s", "I Bleed"
+  "Airmode", "Idle Band °/s", "I Bleed",
+  "Heading Hold", "Hold Strength", "Hold Max °/s", "Hold Band °",
+  "Min Output %"
 };
-// The yaw stabilisation boxes (6-15, 20-26) are used by yaw_pid.ino, which names them (T_YAW_...).
+// The yaw stabilisation boxes (6-15, 20-30) are used by yaw_pid.ino, which names them (T_YAW_...).
 // Shown when the ? next to a box is tapped on the Whale Tuning page. Keep each in step with its name above.
 const char *tuneHelp[NUM_TUNE] = {
   "The robot's name. Shown as the page title and heading, used as the receiver's device name in the ELRS Lua script, "
@@ -195,20 +242,35 @@ const char *tuneHelp[NUM_TUNE] = {
   "On: keeps correcting with both sticks centred, so a hit at standstill gets fought and the robot turns back to its "
   "heading (like a quad's airmode). Off: hands off whenever both sticks are centred - the robot can be knocked round "
   "freely, and the controller picks up again as soon as a stick moves.",
-  "With both sticks centred, turn-rate errors smaller than this (°/s) are ignored. Stops the robot twitching at "
-  "standstill as small corrections build up until the wheels break free, and stops a slow creep from gyro drift. "
-  "Only at standstill - driving is unaffected. 0 = off. Typically 2 to 5.",
+  "With both sticks centred: while the robot is turning slower than this (°/s) the controller outputs nothing at all, "
+  "so gyro noise can't twitch the motors (in 3D mode even a one-count nudge off 1500 is a real motor pulse), and "
+  "there's no slow creep from gyro drift. Knocked faster than this, it corrects at full strength. Only at standstill - "
+  "driving is unaffected. 0 = off. Typically 5 to 15: bigger = quieter, but small knocks at rest aren't corrected.",
   "While no turn is asked for, the I term (the 'held heading') slowly fades, per second: 0.1 = down to about a third "
   "in 10 s. Stops it fighting a pin forever (stalled motors, no current limit), while a quick hit still gets "
-  "corrected. 0 = holds forever. Higher = lets go sooner."
+  "corrected. 0 = holds forever. Higher = lets go sooner. With Heading Hold on it also lets the held heading slowly "
+  "accept where the robot has been pushed to.",
+  "On: when you centre the steering stick, once the turn has finished it remembers which way the robot is facing and "
+  "steers back to exactly that heading after a hit or a shove - at standstill and while driving straight. Moving the "
+  "stick takes over; centring it again takes the new heading. Off: only the turn rate is controlled.",
+  "How hard heading hold steers back, per second: the return turn rate (°/s) per degree off. 4 = 10° off asks for "
+  "40°/s back. Higher = snappier but can overshoot and swing; lower = softer. Try 2 to 8.",
+  "The fastest heading hold will turn back, in °/s, so a big knock doesn't whip it round. e.g. 120 to 300.",
+  "At standstill, heading hold rests once it's within this many degrees of the held heading (with Idle Band, so the "
+  "motors stay quiet). Smaller = more exact but more likely to hunt back and forth. e.g. 1 to 3.",
+  "Smallest drive output each wheel gets once it's asked to move at all, in %. The bottom of the range often does "
+  "nothing useful (the motor can't overcome friction), so any non-zero output starts here and the rest of the stick "
+  "is spread over what's left: at 10, just off centre = 10%, half = 55%, full = still 100%. Applies to throttle, "
+  "steering and the yaw controller. 0 = off. Find it by creeping a stick off centre with the wheels on the floor: "
+  "the % where the robot starts to move. Too high = jumpy around centre, and Stab corrections at rest get punchy."
 };
 volatile float tuneVal[NUM_TUNE] = { 0 };
 
 // Sections on the Whale Tuning page: "Title:box,box,...|Title:...". Boxes appear in the order listed (the yaw ones in
 // tuning order). Any box not listed goes in an "Other" section at the end.
 const char *tuneGroups =
-  "Yaw Tuning:9,14,15,11,6,8,7,20,10,12,13,21,24,25,26"
-  "|Hardware:16,17,18,19,22,23"
+  "Yaw Tuning:9,14,15,11,6,8,7,20,10,12,13,21,24,25,26,27,28,29,30"
+  "|Hardware:16,17,18,19,31,22,23"
   "|Software:0,1,2,3,5,4";
 
 // Boxes shown as a dropdown instead of a number: "value:label|value:label". nullptr = a normal number box.
@@ -218,7 +280,9 @@ const char *tuneChoice[NUM_TUNE] = {
   nullptr, nullptr, nullptr, nullptr, nullptr,
   nullptr, "0:Normal|1:Reversed", "0:Normal|1:Reversed", "0:Normal|1:Reversed", "0:Normal|1:Reversed",
   nullptr, nullptr, "1:Normal|-1:Reversed", nullptr,
-  "1:On|0:Off", nullptr, nullptr
+  "1:On|0:Off", nullptr, nullptr,
+  "1:On|0:Off", nullptr, nullptr, nullptr,
+  nullptr
 };
 #define T_WIFI_POWER 5   // 1 low, 2 medium, 3 high (0 / anything else = high)
 #define T_ESC_DIR 16     // 16..19: ESC 1..4 direction, 0 normal, 1 reversed
@@ -246,8 +310,13 @@ const float tuneDefault[NUM_TUNE] = {
   1.0f,     // Yaw Dir
   16.4f,    // Gyro Scale
   1.0f,     // Airmode: on
-  3.0f,     // Idle Band
-  0.1f      // I Bleed: very slow (about 10 s to let go)
+  8.0f,     // Idle Band °/s: comfortably above gyro noise
+  0.1f,     // I Bleed: very slow (about 10 s to let go)
+  1.0f,     // Heading Hold: on
+  4.0f,     // Hold Strength: 10° off -> 40°/s back
+  180.0f,   // Hold Max °/s
+  2.0f,     // Hold Band °
+  0.0f      // Min Output %: off
 };
 
 
@@ -283,7 +352,7 @@ int txchannel[10] = { 1500 };
 
 #define MAX_ESC 4                                             // how many ESC slots exist (arrays below always have this many entries)
 #define NUM_ESC 2                                             // how many ESCs are actually used: 1 to MAX_ESC. Change only this number.
-float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // 0.0 - 1.0, what you send to each ESC
+volatile float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // DShot value each ESC gets (0 = stop, 48-2047), sent by the DShot task
 
 // An ESC that isn't giving telemetry gets re-sent "enable EDT" this often (ms),
 // so one plugged in after boot can start reporting. Set to 0 to turn this off.
@@ -327,13 +396,28 @@ enum : uint8_t { ESC_OK = 0,
                  ESC_RAMP,
                  ESC_CUT };
 volatile uint8_t escState[MAX_ESC] = { 0 };   // ESC_OK / ESC_LOST / ESC_REARM / ESC_RAMP / ESC_CUT
-uint32_t escStateMs[MAX_ESC] = { 0 };         // millis() when the current state started
+volatile uint32_t escStateMs[MAX_ESC] = { 0 };  // millis() when the current state started (read by the DShot task)
 uint8_t escEdtTries[MAX_ESC] = { 0 };         // EDT enables sent during this re-arm
 volatile uint32_t escDrops[MAX_ESC] = { 0 };  // times this ESC was lost since boot
 volatile uint32_t escReinits[MAX_ESC] = { 0 };  // times it was successfully re-initialised
-volatile uint32_t escFramesSent[MAX_ESC] = { 0 };  // DShot frames sent since the last (re)connect
-volatile uint32_t escFramesGood[MAX_ESC] = { 0 };  // ...that got a telemetry reply
-uint32_t escLastSendUs[MAX_ESC] = { 0 };           // micros() at the start of the last send (0 = none yet)
+volatile uint32_t escBootAssists[MAX_ESC] = { 0 };  // times the line was held low to get a re-powered ESC out of its bootloader
+
+// Boot assist (DShot task, drive.ino). AM32's bootloader only starts the motor firmware if it sees the signal line
+// LOW while it boots; DShot idles the line HIGH, so an ESC re-powered while the robot runs sat in its bootloader for
+// ~20 s. An ESC lost for ESC_BOOT_AFTER_MS gets its line held low for ESC_BOOT_HOLD_MS (just that ESC - the other keeps
+// running), then DShot restarts; if it still isn't answering ESC_BOOT_RETRY_MS later, it's tried again.
+#define ESC_BOOT_AFTER_MS 300
+#define ESC_BOOT_HOLD_MS 2500
+#define ESC_BOOT_RETRY_MS 4000
+// The ESC library's own reply counters (AlfredoDShot::stats(), totals since boot), copied out by escTick():
+// replies decoded OK (eRPM or EDT), no reply at all, and replies that came back garbled (framing / GCR / CRC).
+volatile uint32_t escStOk[MAX_ESC] = { 0 }, escStNoRep[MAX_ESC] = { 0 }, escStFrame[MAX_ESC] = { 0 };
+volatile uint32_t escStGcr[MAX_ESC] = { 0 }, escStCrc[MAX_ESC] = { 0 };
+volatile uint16_t escEcho[MAX_ESC] = { 0 };      // our own frame read back off the wire: 31 = wiring good
+uint32_t escBaseOk[MAX_ESC] = { 0 };             // totals at the last (re)connect, for the loss % since then
+uint32_t escBaseTried[MAX_ESC] = { 0 };
+uint32_t escSecOk[MAX_ESC] = { 0 }, escSecNr[MAX_ESC] = { 0 }, escSecFr[MAX_ESC] = { 0 };  // the last second's counts
+uint32_t escSecGcr[MAX_ESC] = { 0 }, escSecCrc[MAX_ESC] = { 0 };
 bool escMonitorOn = false;                         // switched on in setup() once the ESCs have booted
 bool escBlind[MAX_ESC] = { false };                // true during a manual (channel 5) reboot: ignore telemetry
 bool escHeard[MAX_ESC] = { false };                // telemetry seen since the ESC last went to OK
@@ -466,8 +550,23 @@ int drive2_pwm = 0;
 int gearbox_ratio[MAX_ESC] = { 19, 19, 19, 19 };
 int wheel_diamiter[MAX_ESC] = { 101, 101, 101, 101 };  // in mm
 
-const unsigned long INTERVAL_US = 1000;
-unsigned long previousMicros = 0;
+// DShot sending (drive.ino): its own task on core 1, woken by a 1000 µs timer - 1000 frames/s per ESC.
+#define ESC_TICK_US 1000  // time between DShot frames, µs
+// drive_escs() stamps this when it updates throttleCmd
+volatile uint32_t escCmdStampMs = 0;
+volatile uint32_t escPeriodMinUs = 0xFFFFFFFFUL;  // shortest / longest gap between DShot ticks this second (diag line)
+volatile uint32_t escPeriodMaxUs = 0;
+float escShowTickMs = 0, escShowMinMs = 0, escShowMaxMs = 0;  // last second's DShot timing, for the Bulk Text ESC line
+
+// ESC telemetry, copied out of the ESC library by the DShot task after every send. Everything else reads these
+// (via escAgeUs() / escVolts() / ... in drive.ino), never the library directly: the task may be updating the
+// library's values on the other core at that moment, and a 64-bit time read half-old/half-new looked like a lost ESC.
+volatile uint32_t escRxUs[MAX_ESC] = { 0 };      // micros() of the last good reply
+volatile bool escRxEver[MAX_ESC] = { false };    // a reply has ever been received
+volatile float escSnapV[MAX_ESC] = { NAN, NAN, NAN, NAN };
+volatile float escSnapA[MAX_ESC] = { 0 };
+volatile float escSnapT[MAX_ESC] = { NAN, NAN, NAN, NAN };
+volatile float escSnapRpm[MAX_ESC] = { 0 };
 
 // pre arm safe varibles
 bool safe_switch = 0;
@@ -512,7 +611,7 @@ struct Med3 {
 };
 
 volatile uint32_t dbgMaxLoopGapUs = 0;  // longest pause between loop() passes during the last second (diagnostics line)
-char dbgLine[300] = "";                 // diagnostics text shown on the page; rebuilt once a second in loop()
+char dbgLine[360] = "";                 // diagnostics text shown on the page; rebuilt once a second in loop()
 volatile uint32_t imuReadMaxUs = 0;     // longest single IMU FIFO read this second (it can busy-wait after an overflow)
 volatile uint32_t imuBadPackets = 0;    // corrupted IMU packets thrown away (printed in the diag line)
 volatile uint32_t imuBadOnLate = 0;     // ...of which, how many were read late (took longer than IMU_LATE_US)
@@ -583,6 +682,20 @@ void setup() {
   bootTag = String(" (") + resetReasonShort() + " #" + bootCount + ")";
   Serial.printf("Boot #%u\n", (unsigned)bootCount);
 
+  // CPU monitor first, while nothing else is running: it calibrates "idle" from its first samples, so starting it
+  // after the IMU / LED / WiFi / CRSF / DShot tasks made it count their load as idle - and later read 0%.
+  setBoot("CPU monitor init");
+  CpuMonitorConfig cpucfg;
+  cpucfg.sampleIntervalMs = 10;
+  cpucfg.calibrationSamples = 5;
+  cpucfg.enablePerCore = true;
+  cpucfg.enableTemperature = false;
+  cpuMonitorOk = cpuMonitor.init(cpucfg);
+  if (!cpuMonitorOk) {
+    Serial.println("CPU monitor init failed");  // carry on: the CPU figures just stay at 0
+  }
+  delay(cpucfg.sampleIntervalMs * (cpucfg.calibrationSamples + 3));  // let it take its calibration samples undisturbed
+
   Serial.println("ELRS 4.x receiver starting");
 
   setBoot("Receiver init");
@@ -593,6 +706,7 @@ void setup() {
 
   crsf.begin(crsfSerial);
   crsf.setDeviceName("AlfredoCRSF");
+  crsfTaskStart();  // receiver + telemetry now run in their own task (crsf.ino)
 
   ledInit();
 
@@ -609,8 +723,7 @@ void setup() {
   }
 
   setBoot("Waiting 2s");
-  for (unsigned long start = millis(); millis() - start < 4000;) {
-  }
+  delay(4000);  // (delay() lets the core idle; an empty loop here kept it at 100%)
 
   pinMode(INT_PIN, INPUT_PULLDOWN);
 
@@ -728,10 +841,9 @@ void setup() {
   ArduinoOTA.begin();
 
   setBoot("Waiting 2s");
-  for (unsigned long start = millis(); millis() - start < 2000;) {
-  }
+  delay(2000);
 
-  for (int i = 0; i < NUM_ESC; i++) escs[i].begin(ESC_PINS[i], DSHOT600, true, MOTOR_POLES);
+  escTaskStart();  // starts the ESCs and the 1 ms DShot task (drive.ino)
 
   setBoot("Waiting for ESC boot");
   unsigned long lastBootPush = 0;
@@ -745,23 +857,14 @@ void setup() {
       lastBootPush = millis();
       pushWeb();
     }
+
+    vTaskDelay(pdMS_TO_TICKS(1));  // the DShot task sends the frames; this just keeps them fresh and the page updating
   }
 
   setBoot("Enabling EDT");
-  for (int i = 0; i < NUM_ESC; i++) escs[i].command(DSHOT_CMD_EDT_ENABLE);
+  for (int i = 0; i < NUM_ESC; i++) escRequestEdt(i);  // sent by the DShot task on its next tick
+  delay(20);  // let it go out before the ESC monitor starts
   escMonitorStart();  // from here on, an ESC that drops out is re-initialised automatically (drive.ino)
-
-  setBoot("CPU monitor init");
-  CpuMonitorConfig cpucfg;
-  cpucfg.sampleIntervalMs = 10;
-  cpucfg.calibrationSamples = 5;
-  cpucfg.enablePerCore = true;
-  cpucfg.enableTemperature = false;
-
-  cpuMonitorOk = cpuMonitor.init(cpucfg);
-  if (!cpuMonitorOk) {
-    Serial.println("CPU monitor init failed");  // carry on: the CPU figures just stay at 0 (returning here used to skip the safety check below)
-  }
 
   setBoot("Ready");  // e.g. Ready (PANIC #12), Ready (BROWN #3), Ready (PWR #1)
 
@@ -776,8 +879,7 @@ void loop() {
 
   update_reboot();
   vbatUpdate();  // battery voltage divider
-  crsf_rx();
-  crsf_tx();
+  crsfSetStrings(false);  // Mode / Boot text for the radio telemetry (the CRSF task does the receiving and sending)
   status();
   web();
   mixer(txchannel[1], txchannel[2]);

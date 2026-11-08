@@ -17,37 +17,28 @@ void status() {
     saveLevel();
   }
 
-  // ---- Bulk text ----
-  // line 2, per ESC: loss % since (re)connect, then drops/reinits since boot
-  String escLine = "";
-  for (int i = 0; i < NUM_ESC; i++) {
-    if (i) escLine += "  ";
-    escLine += String(escLossPct(i), 1) + "% d" + String(escDrops[i]) + "/r" + String(escReinits[i]);
-  }
-  bulkText = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + escLine + "\nTilt: " + (imuLevelled ? String((float)imuTiltDeg, 0) + "° (dmp " + String((float)imuTiltDmpDeg, 0) + " acc " + String((float)imuTiltAccDeg, 0) + ")" : String("not levelled")) + "  Yaw: " + String(Y) + "\n" + yawStatusLine();  // yaw controller line (yaw_pid.ino)
-
   // longest gap between loop() passes, reported once a second on the page's diagnostics line
   static uint32_t lastLoopUs = micros();
   uint32_t nowUs = micros();
   if (nowUs - lastLoopUs > maxGapUs) maxGapUs = nowUs - lastLoopUs;
   lastLoopUs = nowUs;
 
-  // CPU load with peak-hold: jumps up instantly, then decays back toward the live reading.
-  // Runs once per CPU monitor sample (every 10 ms, same as cpucfg.sampleIntervalMs) so the decay
-  // speed doesn't depend on how fast loop() spins. With alpha 0.01 the fall-off takes about 1 second.
+  // CPU load, smoothed: a rolling average, the same speed up and down (CPU_SMOOTH_ALPHA, about 1 s).
+  // Runs once per CPU monitor sample (every 10 ms, same as cpucfg.sampleIntervalMs) so the smoothing
+  // speed doesn't depend on how fast loop() spins.
   static uint32_t lastCpuMs = 0;
   if (millis() - lastCpuMs >= 10) {
     lastCpuMs = millis();
     CpuUsageSample sample;
     if (cpuMonitorOk && cpuMonitor.getLastSample(sample)) {
-      core0Peak = peakHold(sample.perCore[0], core0Peak);
-      core1Peak = peakHold(sample.perCore[1], core1Peak);
-      coreAveragePeak = peakHold(sample.average, coreAveragePeak);
+      core0Avg = smoothCpu(sample.perCore[0], core0Avg);
+      core1Avg = smoothCpu(sample.perCore[1], core1Avg);
+      coreAllAvg = smoothCpu(sample.average, coreAllAvg);
 
       // what the web page shows
-      core0 = core0Peak;
-      core1 = core1Peak;
-      coreA = coreAveragePeak;
+      core0 = core0Avg;
+      core1 = core1Avg;
+      coreA = coreAllAvg;
     }
   }
 }
@@ -60,9 +51,9 @@ void updateRecords() {
   for (int i = 0; i < NUM_ESC; i++) {
     if (!escPresent(i)) continue;
     n++;
-    float v = escs[i].voltage();
+    float v = escVolts(i);
     float a = escCurrent(i);
-    float t = escs[i].temperatureC();
+    float t = escTempC(i);
     if (isfinite(t) && t > recMaxTemp) recMaxTemp = t;
     if (a > recMaxA) recMaxA = a;
     sumA += a;
@@ -80,10 +71,9 @@ void updateRecords() {
   }
 }
 
-// Peak hold: a new high is taken immediately, otherwise ease down toward the raw reading
-float peakHold(float raw, float peak) {
-  if (raw > peak) return raw;
-  return raw * PEAK_DECAY_ALPHA + peak * (1.0f - PEAK_DECAY_ALPHA);
+// Rolling average: ease toward the raw reading at the same speed whether it's going up or down
+float smoothCpu(float raw, float avg) {
+  return avg + CPU_SMOOTH_ALPHA * (raw - avg);
 }
 
 // Why the board last restarted - shown on the page and printed at boot. This is the quickest way to tell
@@ -107,4 +97,28 @@ const char *resetReasonShort() {
         return other;
       }
   }
+}
+
+// Bulk Text for the web page. Built only when the page data is put together (getSerializedData(), ~20 times a
+// second) instead of on every loop() pass (~1000 a second) - same text, a fraction of the CPU and heap churn.
+// Returns a fresh String each time, so it's safe from the web server's task too (the page's first update on connect).
+String buildBulkText() {
+  // line 2, per ESC: loss % since (re)connect, then drops/reinits since boot
+  String escLine = "";
+  for (int i = 0; i < NUM_ESC; i++) {
+    if (i) escLine += "  ";
+    escLine += String(escLossPct(i), 1) + "% d" + String(escDrops[i]) + "/r" + String(escReinits[i]) + "/b" + String(escBootAssists[i]);
+  }
+  // DShot timing over the last second: longest tick, and the shortest-longest gap between ticks
+  escLine += "  esc " + String(escShowTickMs, 2) + "ms dshot " + String(escShowMinMs, 2) + "-" + String(escShowMaxMs, 2) + "ms";
+  // per ESC, replies in the last second: ok / none / garbled (framing, GCR, CRC), and the wiring echo (31 = good)
+  for (int i = 0; i < NUM_ESC; i++)
+    escLine += "\nE" + String(i + 1) + " ok " + String(escSecOk[i]) + " none " + String(escSecNr[i]) + " fr " + String(escSecFr[i]) +
+               " gcr " + String(escSecGcr[i]) + " crc " + String(escSecCrc[i]) + " echo " + String(escEcho[i]);
+  String out = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + escLine + "\nTilt: " + (imuLevelled ? String((float)imuTiltDeg, 0) + "° (dmp " + String((float)imuTiltDmpDeg, 0) + " acc " + String((float)imuTiltAccDeg, 0) + ")" : String("not levelled")) + "  Yaw: " + String(Y) + "\n" + yawStatusLine();  // yaw controller line (yaw_pid.ino)
+  if (bulkText.length()) {  // anything you've put in bulkText yourself
+    out += "\n";
+    out += bulkText;
+  }
+  return out;
 }

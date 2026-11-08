@@ -173,9 +173,21 @@ void mixer(float throttle, float steering) {
   outL = left;
   outR = right;
 
+  // Min Output %: any non-zero wheel output starts at least here; the rest of the range is spread over what's left
+  float mo = constrain((float)tuneVal[T_MIN_OUT] / 100.0f, 0.0f, 0.9f);
+  left = minOutput(left, mo);
+  right = minOutput(right, mo);
+
   // scale back to standard rc range 1000-2000
   drive1_pwm = 1500 + (int)lroundf(left * 500.0f);
   drive2_pwm = 1500 + (int)lroundf(right * 500.0f);
+}
+
+// Min Output: 0 stays 0 (anything under one output step counts as 0, so noise doesn't kick it), otherwise
+// sign * (min + (1 - min) * |v|), so it starts at min and still reaches full at full
+static float minOutput(float v, float mo) {
+  if (!(mo > 0) || fabsf(v) < 0.001f) return (fabsf(v) < 0.001f) ? 0.0f : v;
+  return copysignf(mo + (1.0f - mo) * fabsf(v), v);
 }
 
 // Rescale so output still reaches full range after the deadband

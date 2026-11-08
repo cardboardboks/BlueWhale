@@ -22,10 +22,28 @@ void web() {
     ws.cleanupClients();
     applyWifiPower();  // WiFi Power box changed?
     dbgMaxLoopGapUs = maxGapUs;
-    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk \ngap %.1fms json %.1fms esc %.1fms | ws %u\nimu read %.1fms late %u  cnt %.1fms\nfifo %u multi %u  bad %u (on late reads %u) last qn %.2f\nI2C err %u rec %u ovf %u",
+    uint32_t pMin = escPeriodMinUs, pMax = escPeriodMaxUs;
+    escShowTickMs = escMaxUs / 1000.0f;  // last second's DShot timing, shown on the Bulk Text ESC line (status.ino)
+    escShowMinMs = (pMin == 0xFFFFFFFFUL) ? 0.0f : pMin / 1000.0f;
+    escShowMaxMs = pMax / 1000.0f;
+    {  // each ESC's reply results over the last second (from the library's counters)
+      static uint32_t pOk[MAX_ESC], pNr[MAX_ESC], pFr[MAX_ESC], pGcr[MAX_ESC], pCrc[MAX_ESC];
+      for (int i = 0; i < NUM_ESC; i++) {
+        uint32_t ok = escStOk[i], nr = escStNoRep[i], fr = escStFrame[i], gc = escStGcr[i], cr = escStCrc[i];
+        escSecOk[i] = ok - pOk[i];
+        escSecNr[i] = nr - pNr[i];
+        escSecFr[i] = fr - pFr[i];
+        escSecGcr[i] = gc - pGcr[i];
+        escSecCrc[i] = cr - pCrc[i];
+        pOk[i] = ok; pNr[i] = nr; pFr[i] = fr; pGcr[i] = gc; pCrc[i] = cr;
+      }
+    }
+    uint32_t skipped = wsSkipped;
+    wsSkipped = 0;
+    snprintf(dbgLine, sizeof(dbgLine), "heap %uk min %uk blk %uk \ngap %.1fms json %.1fms %ub skip %u | ws %u\nimu read %.1fms late %u  cnt %.1fms\nfifo %u multi %u  bad %u (on late reads %u) last qn %.2f\nI2C err %u rec %u ovf %u",
              (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024),
              (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024),
-             maxGapUs / 1000.0f, jsonMaxUs / 1000.0f, escMaxUs / 1000.0f, (unsigned)ws.count(),
+             maxGapUs / 1000.0f, jsonMaxUs / 1000.0f, (unsigned)wsLastBytes, (unsigned)skipped, (unsigned)ws.count(),
              imuReadMaxUs / 1000.0f, (unsigned)imuLateReads, imuCountMaxUs / 1000.0f, (unsigned)imuFifoMax, (unsigned)imuMultiPkt, (unsigned)imuBadPackets, (unsigned)imuBadOnLate, (float)imuLastBadQn, (unsigned)imuI2cErrors, (unsigned)imuRecoveries, (unsigned)imuOverflows);
     imuReadMaxUs = 0;
     imuCountMaxUs = 0;
@@ -33,6 +51,8 @@ void web() {
     maxGapUs = 0;
     jsonMaxUs = 0;
     escMaxUs = 0;
+    escPeriodMinUs = 0xFFFFFFFFUL;
+    escPeriodMaxUs = 0;
   }
 
   unsigned long now = millis();
@@ -43,10 +63,21 @@ void web() {
     if (!imuAlive()) imuOrient = 0;  // IMU dropout: blank the up/down arrow instead of showing a stale value
 
     if (ws.count() > 0) {  // nobody watching -> don't build the JSON at all
-      uint32_t t0 = micros();
-      ws.textAll(getSerializedData());
-      uint32_t d = micros() - t0;
-      if (d > jsonMaxUs) jsonMaxUs = d;
+      // If the last update hasn't gone out yet (slow phone / WiFi), skip this one rather than queue it: a full
+      // queue makes the web server close the connection, which the page shows as STALE until it reconnects.
+      if (!ws.availableForWriteAll()) {
+        wsSkipped++;
+      } else {
+        static uint8_t n = 0;
+        bool full = (++n >= 10);  // tuning values + diagnostics in every 10th update only (2 a second)
+        if (full) n = 0;
+        uint32_t t0 = micros();
+        String msg = getSerializedData(full);
+        wsLastBytes = msg.length();
+        ws.textAll(msg);
+        uint32_t d = micros() - t0;
+        if (d > jsonMaxUs) jsonMaxUs = d;
+      }
     }
   }
 }
@@ -76,22 +107,24 @@ void addEsc(JsonArray arr, int i, bool ok) {
   JsonObject o = arr.add<JsonObject>();
   o["ok"] = ok;
   if (!ok) return;  // absent ESC -> page leaves its column blank
-  float rpmOut = escs[i].rpm() / gearbox_ratio[i];
+  float rpmOut = escRpm(i) / gearbox_ratio[i];
   o["thr"] = escThrPct(i);  // an unset output (0) works out to -300 %, shown as 0 %
-  o["v"] = escs[i].voltage();
+  o["v"] = escVolts(i);
   o["a"] = escCurrent(i);
-  o["t"] = escs[i].temperatureC();
+  o["t"] = escTempC(i);
   o["rpm"] = rpmOut;
   o["spd"] = escSpeed(i);
   o["link"] = escLossPct(i);  // % of frames with no telemetry reply since boot / the last reconnect
 }
 
-String getSerializedData() {
+// full = include the tuning values and the diagnostics line. They change rarely, so the regular updates leave them
+// out (the page keeps the last ones it got) - that keeps each update small. Connecting always gets a full one.
+String getSerializedData(bool full) {
   JsonDocument doc;
 
   doc["mode"] = modeString;
   doc["boot"] = bootState;
-  doc["bulk"] = bulkText;
+  doc["bulk"] = buildBulkText();  // built here, only when the page is actually sent (status.ino)
 
   // CPU: per core + average
   float c0 = core0, c1 = core1, ca = coreA;
@@ -108,7 +141,7 @@ String getSerializedData() {
     bool ok = escPresent(i);
     addEsc(escArr, i, ok);
     if (ok) {
-      sumV += escs[i].voltage();
+      sumV += escVolts(i);
       sumA += escCurrent(i);
       nEsc++;
     }
@@ -134,18 +167,20 @@ String getSerializedData() {
   doc["wifi"] = wifiRssi();
   doc["armed"] = armSwitchHigh();                             // the page greys out the tuning boxes while true
   doc["noreboot"] = rebootBlocked();                          // ...and the Reboot button while this is true (armed and link up)
-  doc["dbg"] = dbgLine;                                       // built once a second in loop() (walking the heap every update would be wasteful)
+  if (full) doc["dbg"] = dbgLine;                             // built once a second in loop() (walking the heap every update would be wasteful)
   doc["up"] = (uint32_t)(esp_timer_get_time() / 1000000ULL);  // seconds since boot
 
-  // Tuning values
-  JsonArray tune = doc["tune"].to<JsonArray>();
-  for (int i = 0; i < NUM_TUNE; i++) {
-    if (i < NUM_TUNE_STR) {
-      char txt[TUNE_STR_LEN];
-      strlcpy(txt, tuneStr[i], TUNE_STR_LEN);  // snapshot, so the JSON gets a consistent copy
-      tune.add(txt);                           // text variables go out as JSON strings
-    } else {
-      tune.add((float)tuneVal[i]);
+  // Tuning values (full updates only)
+  if (full) {
+    JsonArray tune = doc["tune"].to<JsonArray>();
+    for (int i = 0; i < NUM_TUNE; i++) {
+      if (i < NUM_TUNE_STR) {
+        char txt[TUNE_STR_LEN];
+        strlcpy(txt, tuneStr[i], TUNE_STR_LEN);  // snapshot, so the JSON gets a consistent copy
+        tune.add(txt);                           // text variables go out as JSON strings
+      } else {
+        tune.add((float)tuneVal[i]);
+      }
     }
   }
 
@@ -211,7 +246,7 @@ String getTuneNames() {
 void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType type,
                void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_CONNECT) {
-    client->text(getSerializedData());  // send current values immediately
+    client->text(getSerializedData(true));  // send current values immediately (full: tuning + diagnostics too)
     client->text(getTuneNames());
   } else if (type == WS_EVT_DATA) {
     // the page's "Reset" button sends the text "reset"
@@ -292,7 +327,7 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
 
 // Push a web update right now (used during boot, when loop() isn't running yet)
 void pushWeb() {
-  ws.textAll(getSerializedData());
+  ws.textAll(getSerializedData(true));
   ws.cleanupClients();
 }
 
@@ -308,8 +343,7 @@ void applyWifiPower() {
 
 // true if channel 5 is held high at power-up (transmitter on): start with the default WiFi network
 bool wifiDefaultsHeld() {
-  for (uint32_t t0 = millis(); millis() - t0 < 600;) {
-    crsf_rx();
+  for (uint32_t t0 = millis(); millis() - t0 < 600;) {  // the CRSF task is already reading the receiver
     if (crsf.isLinkUp() && txchannel[ESC_REBOOT_CH] > ESC_REBOOT_US) return true;
     delay(5);
   }

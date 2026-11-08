@@ -18,6 +18,8 @@
  *   [0]      uint8   version (3)
  *   then 3 null-terminated strings: mode, boot, orientation (max 15 chars each)
  *
+ * Runs in its own task on core 1 (crsfTask, below): receiver in every 1 ms, telemetry out every 100 ms.
+ *
  * Decoded on the radio by /SCRIPTS/WHALE/whale_decode.lua
  * VI_PROTO_VERSION (main sketch) must be 3 to match the decoder.
  */
@@ -25,6 +27,11 @@
 #if VI_PROTO_VERSION != 3
 #error "VI_PROTO_VERSION must be 3 to match whale_decode.lua"
 #endif
+
+// ---- Mode / Boot text handed from loop() to the CRSF task ----
+portMUX_TYPE crsfStrMux = portMUX_INITIALIZER_UNLOCKED;
+char crsfModeBuf[VI_MAX_STR + 1] = "";
+char crsfBootBuf[VI_MAX_STR + 1] = "";
 
 #define CRSF_TX_INTERVAL_MS 100    // one telemetry frame per 100 ms
 #define CRSF_STATUS_EVERY_MS 500  // resend the strings at least this often
@@ -68,9 +75,9 @@ void readSensors() {
   for (int k = 0; k < MAX_ESC; k++) {
     EscTelem &e = telem.esc[k];
     if (k < NUM_ESC && escPresent(k)) {
-      e.voltage = finiteOr0(escs[k].voltage());
+      e.voltage = finiteOr0(escVolts(k));
       e.current = finiteOr0(escCurrent(k));
-      e.temp = finiteOr0(escs[k].temperatureC());
+      e.temp = finiteOr0(escTempC(k));
       vSum += e.voltage;
       iSum += e.current;
       n++;
@@ -82,8 +89,15 @@ void readSensors() {
   telem.avgVoltage = vbatValid() ? vbat : ((n > 0) ? vSum / n : 0);
   telem.totalAmps = iSum;
 
-  setStatusString(telem.mode, modeString.c_str());
-  setStatusString(telem.boot, bootShort().c_str());  // fits the 15-character limit, keeps the reset reason
+  // Mode / Boot text: copied out of the String variables by loop() (crsfSetStrings), never read from them here -
+  // they're reassigned all over loop(), and reading one mid-change from this task could crash the board.
+  char m[VI_MAX_STR + 1], b[VI_MAX_STR + 1];
+  portENTER_CRITICAL(&crsfStrMux);
+  memcpy(m, crsfModeBuf, sizeof(m));
+  memcpy(b, crsfBootBuf, sizeof(b));
+  portEXIT_CRITICAL(&crsfStrMux);
+  setStatusString(telem.mode, m);
+  setStatusString(telem.boot, b);  // fits the 15-character limit, keeps the reset reason
   const char *o = !imuAlive() ? "IMU Lost" : (imuOrient > 0) ? "Up" : (imuOrient < 0) ? "Down" : "--";
   setStatusString(telem.orientation, o);
 }
@@ -156,11 +170,41 @@ void sendStatus() {
   statusDirty = false;
 }
 
-// start crsf
-void boot_crsf() {
+// Copy the Mode / Boot text for the telemetry. Call from the task that writes modeString / bootState (loop() and
+// setup()); cheap to call often, does the work at most every 50 ms unless forced.
+void crsfSetStrings(bool force) {
+  static uint32_t last = 0;
+  if (!force && millis() - last < 50) return;
+  last = millis();
+  char m[VI_MAX_STR + 1], b[VI_MAX_STR + 1];
+  strlcpy(m, modeString.c_str(), sizeof(m));
+  strlcpy(b, bootShort().c_str(), sizeof(b));
+  portENTER_CRITICAL(&crsfStrMux);
+  memcpy(crsfModeBuf, m, sizeof(m));
+  memcpy(crsfBootBuf, b, sizeof(b));
+  portEXIT_CRITICAL(&crsfStrMux);
 }
 
-// receive crsf data
+// ---- CRSF task ----
+// Receiver in and telemetry out, every 1 ms from its own task on core 1, so the sticks are read on time whatever
+// loop() is busy with. It's the only code that calls crsf.update() and sends telemetry; the rest of the sketch reads
+// txchannel[] and crsf.isLinkUp(). Below the DShot task in priority, above loop().
+#define CRSF_TASK_PRIO (configMAX_PRIORITIES - 3)
+void crsfTask(void *arg) {
+  TickType_t last = xTaskGetTickCount();
+  for (;;) {
+    vTaskDelayUntil(&last, pdMS_TO_TICKS(1));
+    crsf_rx();
+    crsf_tx();
+  }
+}
+
+// Called once in setup(), straight after crsf.begin()
+void crsfTaskStart() {
+  xTaskCreatePinnedToCore(crsfTask, "crsf", 4096, nullptr, CRSF_TASK_PRIO, nullptr, 1);
+}
+
+// receive crsf data (CRSF task only)
 void crsf_rx() {
   crsf.update();
   for (int i = 1; i <= 8; i++) {
@@ -174,7 +218,7 @@ void crsf_rx() {
   }
 }
 
-// send crsf telem - call from loop() AND from any wait loop (e.g. pre_arm_safe)
+// send crsf telem (CRSF task only; it paces itself to CRSF_TX_INTERVAL_MS)
 void crsf_tx() {
   static uint32_t lastTxMs = 0;
   static uint32_t lastStatusMs = 0;
@@ -182,8 +226,7 @@ void crsf_tx() {
   if (millis() - lastTxMs < CRSF_TX_INTERVAL_MS) return;
   lastTxMs = millis();
 
-  crsf.sendHeartbeat();
-  for (int i = 0; i < NUM_ESC; i++) escs[i].stats();
+  crsf.sendHeartbeat();  // (the ESCs' stats() now runs in the DShot task, drive.ino)
 
   readSensors();
   if (!crsf.isLinkUp()) return;  // nothing to send it to
