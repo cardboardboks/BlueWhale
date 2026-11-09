@@ -115,7 +115,8 @@ String buildBulkText() {
   for (int i = 0; i < NUM_ESC; i++)
     escLine += "\nE" + String(i + 1) + " ok " + String(escSecOk[i]) + " none " + String(escSecNr[i]) + " fr " + String(escSecFr[i]) +
                " gcr " + String(escSecGcr[i]) + " crc " + String(escSecCrc[i]) + " echo " + String(escEcho[i]);
-  String out = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + escLine + "\nTilt: " + (imuLevelled ? String((float)imuTiltDeg, 0) + "° (dmp " + String((float)imuTiltDmpDeg, 0) + " acc " + String((float)imuTiltAccDeg, 0) + ")" : String("not levelled")) + "  Yaw: " + String(Y) + "\n" + yawStatusLine();  // yaw controller line (yaw_pid.ino)
+  String out = String(safe_switch) + String(safe_sticks) + String(safe_link) + "\n" + escLine + "\nTilt: " + (imuLevelled ? String((float)imuTiltDeg, 0) + "° (dmp " + String((float)imuTiltDmpDeg, 0) + " acc " + String((float)imuTiltAccDeg, 0) + ")" : String("not levelled")) + "\n" + yawStatusLine() +  // yaw controller line (yaw_pid.ino)
+               "\n" + battStatusLine();  // battery protection (battery.ino)
   if (bulkText.length()) {  // anything you've put in bulkText yourself
     out += "\n";
     out += bulkText;

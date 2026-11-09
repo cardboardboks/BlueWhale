@@ -27,7 +27,9 @@ void mixer(float throttle, float steering) {
 
   // force only normal operation when imu is disabled
   // when auto up is off: all blinking purple/white (stabilisation not available)
+  bool imuOffMode = false;  // IMU Off mode keeps a little drive even when the battery has cut it
   if (txchannel[4] == 2000 && txchannel[3] == 2000) {
+    imuOffMode = true;
     led(7, 1);
     modeString = "IMU Off";
     t = deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f));
@@ -172,6 +174,20 @@ void mixer(float throttle, float steering) {
   }
   outL = left;
   outR = right;
+
+  // Low battery (battery.ino): scale both wheels by the cap, so throttle, steering and the yaw controller all come down
+  // together and turns keep their shape. IMU Off mode never goes below the "Batt Limp %" box, so it can always
+  // show movement.
+  float cap = battCap();
+  float battLimp = constrain((float)tuneVal[T_BAT_LIMP] / 100.0f, 0.0f, 1.0f);
+  if (imuOffMode && cap < battLimp) cap = battLimp;
+  left *= cap;
+  right *= cap;
+  if (battIsCut()) {
+    if (imuOffMode && battLimp > 0) modeString = "Batt Cut " + String((int)lroundf(battLimp * 100)) + "%";
+    else modeString = "Batt Cut";
+  }
+  else if (cap < 0.995f) modeString = "Low Batt " + String((int)lroundf(cap * 100)) + "%";
 
   // Min Output %: any non-zero wheel output starts at least here; the rest of the range is spread over what's left
   float mo = constrain((float)tuneVal[T_MIN_OUT] / 100.0f, 0.0f, 0.9f);

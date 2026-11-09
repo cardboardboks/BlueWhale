@@ -22,6 +22,21 @@ void drive_escs(int thr1, int thr2) {
     triggered = false;
   }
 
+  // if (escs[0].lossPercent() > 25) {
+  //   // 5 fast blinking orange/black left: esc1 failsafe
+  //   led(5, 1);
+  //   modeString = "Lft ESC Off";
+  // } else {
+  //   led(5, 0);
+  // }
+  // if (escs[1].lossPercent() > 25) {
+  //   // 6 fast blinking orange/black right: esc2 failsafe
+  //   led(6, 1);
+  //   modeString = "Rght ESC Off";
+  // } else {
+  //   led(6, 0);
+  // }
+
   // check for an active rf link right before sending esc command
   // if no rf connection, force esc to disarm and FS leds
   if (crsf.isLinkUp() == 0) {

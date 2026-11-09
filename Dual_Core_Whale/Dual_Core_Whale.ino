@@ -62,6 +62,12 @@ float smoothCpu(float raw, float avg);      // status.ino
 String buildBulkText();                     // status.ino
 String getSerializedData(bool full);        // web.ino
 static float minOutput(float v, float mo);  // mixer.ino
+bool escPresent(int i);                     // drive.ino
+void batteryUpdate();                       // battery.ino
+float battCap();                            // battery.ino
+bool battIsCut();                           // battery.ino
+bool battLedFlash();                        // battery.ino
+String battStatusLine();                    // battery.ino
 
 spi_device_handle_t ledDev;  // SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 
@@ -144,7 +150,10 @@ void resetRecords() {
 // The ESCs (AM32) only send voltage while the motors are running, so the battery is also measured here,
 // which works with the motors stopped. Wiring: battery + -> 150k -> VBAT_PIN -> 8.2k -> GND, 100nF across the 8.2k.
 // The pin can only take ~3.1 V. Max battery = 3.1 x (R_TOP + R_BOT) / R_BOT: 100k/10k -> 34 V (fine for 6S, NOT for 12S).
-#define VBAT_ENABLED 0        // 1 = divider fitted. 0 = ignore the pin and use the ESC voltages (leave at 0 while the pin is floating)
+// Which voltage is used everywhere (battery protection, Avg Volts, Min Volts record, radio telemetry) is the
+// "Batt Source" box on the tuning page: ESCs (default) or Divider. Leave it on ESCs while the pin isn't wired.
+#define T_BAT_SRC 35                 // tuning box: 0 = ESCs, 1 = Divider
+extern volatile float tuneVal[];     // (defined further down, with the other tuning values)
 #define VBAT_PIN 3            // must be an ADC1 pin (GPIO 1-10): ADC2 pins don't work while WiFi is on
 #define VBAT_R_TOP 100000.0f  // battery + -> pin (ohms)
 #define VBAT_R_BOT 10000.0f   // pin -> GND (ohms)
@@ -152,20 +161,28 @@ void resetRecords() {
 #define VBAT_MIN_V 5.0f       // below this the reading is treated as "no battery / wire off" and the ESC voltages are used
 volatile float vbat = 0;      // battery volts (0 = no reading / divider not enabled)
 
-// true when the divider is enabled and reading a believable battery voltage
-bool vbatValid() {
-  return VBAT_ENABLED && vbat >= VBAT_MIN_V;
+// true when Batt Source is set to the divider
+bool vbatEnabled() {
+  return tuneVal[T_BAT_SRC] >= 0.5f;
 }
 
+// true when the divider is selected and reading a believable battery voltage (otherwise everything uses the ESCs)
+bool vbatValid() {
+  return vbatEnabled() && vbat >= VBAT_MIN_V;
+}
+
+// Sets the ADC up whatever the setting, so Batt Source can be switched to Divider live from the page
 void vbatInit() {
-  if (!VBAT_ENABLED) return;
   analogReadResolution(12);
   analogSetPinAttenuation(VBAT_PIN, ADC_11db);  // ~0-3.1 V range
 }
 
 // Called from loop(); takes a reading every 20 ms
 void vbatUpdate() {
-  if (!VBAT_ENABLED) return;
+  if (!vbatEnabled()) {
+    vbat = 0;  // not selected: no reading (and a fresh start if it's switched on later)
+    return;
+  }
   static uint32_t last = 0;
   if (millis() - last < 20) return;
   last = millis();
@@ -176,7 +193,8 @@ void vbatUpdate() {
 // ---- Whale Tuning ----
 // Rename them here. Use tuneVal[n] anywhere in your code; editing a box on the page changes it live.
 // Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
-#define NUM_TUNE 32
+#define NUM_TUNE 38
+#define T_BAT_LIMP 37  // Batt Limp %: drive the battery protection always leaves in IMU Off mode (mixer.ino)
 #define T_MIN_OUT 31  // Min Output %: smallest non-zero drive output per wheel (mixer.ino)
 const char *tuneName[NUM_TUNE] = {
   "Name", "sysID", "SSID", "Password", "Blank",
@@ -186,9 +204,11 @@ const char *tuneName[NUM_TUNE] = {
   "I Limit", "Out Limit", "Yaw Dir", "Gyro Scale",
   "Airmode", "Idle Band °/s", "I Bleed",
   "Heading Hold", "Hold Strength", "Hold Max °/s", "Hold Band °",
-  "Min Output %"
+  "Min Output %",
+  "Low Volt V", "Crit Volt V", "Batt Limit", "Batt Source",
+  "Hold Settle °/s", "Batt Limp %"
 };
-// The yaw stabilisation boxes (6-15, 20-30) are used by yaw_pid.ino, which names them (T_YAW_...).
+// The yaw stabilisation boxes (6-15, 20-30, 36) are used by yaw_pid.ino, which names them (T_YAW_...).
 // Shown when the ? next to a box is tapped on the Whale Tuning page. Keep each in step with its name above.
 const char *tuneHelp[NUM_TUNE] = {
   "The robot's name. Shown as the page title and heading, used as the receiver's device name in the ELRS Lua script, "
@@ -262,14 +282,38 @@ const char *tuneHelp[NUM_TUNE] = {
   "nothing useful (the motor can't overcome friction), so any non-zero output starts here and the rest of the stick "
   "is spread over what's left: at 10, just off centre = 10%, half = 55%, full = still 100%. Applies to throttle, "
   "steering and the yaw controller. 0 = off. Find it by creeping a stick off centre with the wheels on the floor: "
-  "the % where the robot starts to move. Too high = jumpy around centre, and Stab corrections at rest get punchy."
+  "the % where the robot starts to move. Too high = jumpy around centre, and Stab corrections at rest get punchy.",
+  "Low battery, pack volts (smoothed over ~0.5 s). Below this the red LED flash starts (every 5 s, getting quicker "
+  "toward Crit) and, in Ramp mode, the drive output starts being capped. Use the voltage under load you're happy to "
+  "go down to. 6S examples: 21.0 = 3.5 V/cell. 0 = battery protection off.",
+  "Critical battery, pack volts. Ramp mode caps the drive to 0 by here, so it holds the pack just above this. "
+  "Below it for a full second, drive is cut until you disarm (ch3 low). IMU Off mode always keeps Batt Limp % so you can "
+  "still show it moving. Must be below Low Volt. 6S example: 19.8 = 3.3 V/cell.",
+  "Ramp: below Low Volt the drive is capped in step with the voltage, down to 0 at Crit, so pushing harder can't "
+  "sag it past Crit. Hard cut: full power until it's been below Crit for a second, then cut. Either way the cut "
+  "stays until you disarm. Voltage is from the battery divider if fitted, otherwise the ESCs (which only report "
+  "while the motors turn) - see Batt Source.",
+  "Where the battery voltage comes from, for everything that uses it: the battery protection, Avg Volts, the Min "
+  "Volts record and the radio telemetry. ESCs: the average the ESCs report - no extra wiring, but AM32 only sends it "
+  "while the motors turn, so it freezes at rest. Divider: the resistor divider on VBAT_PIN (see the main sketch for "
+  "wiring and VBAT_CAL) - live even at rest; if it reads under 5 V (wire off) the ESCs are used instead. Leave on "
+  "ESCs unless the divider is wired: an unconnected pin reads junk. Changes straight away.",
+  "After you let go of the steering stick, heading hold waits until the robot is turning slower than this (°/s), "
+  "then holds the heading wherever it has come to rest - so it doesn't snap back to where you let go. Knocks with "
+  "no stick input still get pulled back to that heading. Lower = waits for a more complete stop. If it still snaps "
+  "back a little after a fast turn, lower it; if it's slow to start holding, raise it. 0 = lock as soon as the "
+  "requested turn reaches zero (the old behaviour).",
+  "In IMU Off mode (ch4 high) the battery protection never caps the drive below this %, even after a cut - so you "
+  "can always show the robot moving. Only affects IMU Off mode; the other modes are capped and cut as normal. "
+  "0 = IMU Off mode is capped and cut like the rest."
 };
 volatile float tuneVal[NUM_TUNE] = { 0 };
 
 // Sections on the Whale Tuning page: "Title:box,box,...|Title:...". Boxes appear in the order listed (the yaw ones in
 // tuning order). Any box not listed goes in an "Other" section at the end.
 const char *tuneGroups =
-  "Yaw Tuning:9,14,15,11,6,8,7,20,10,12,13,21,24,25,26,27,28,29,30"
+  "Yaw Tuning:9,14,15,11,6,8,7,20,10,12,13,21,24,25,26,27,28,29,30,36"
+  "|Battery:35,32,33,34,37"
   "|Hardware:16,17,18,19,31,22,23"
   "|Software:0,1,2,3,5,4";
 
@@ -282,7 +326,9 @@ const char *tuneChoice[NUM_TUNE] = {
   nullptr, nullptr, "1:Normal|-1:Reversed", nullptr,
   "1:On|0:Off", nullptr, nullptr,
   "1:On|0:Off", nullptr, nullptr, nullptr,
-  nullptr
+  nullptr,
+  nullptr, nullptr, "1:Ramp|0:Hard cut", "0:ESCs|1:Divider",
+  nullptr, nullptr
 };
 #define T_WIFI_POWER 5   // 1 low, 2 medium, 3 high (0 / anything else = high)
 #define T_ESC_DIR 16     // 16..19: ESC 1..4 direction, 0 normal, 1 reversed
@@ -316,7 +362,13 @@ const float tuneDefault[NUM_TUNE] = {
   4.0f,     // Hold Strength: 10° off -> 40°/s back
   180.0f,   // Hold Max °/s
   2.0f,     // Hold Band °
-  0.0f      // Min Output %: off
+  0.0f,     // Min Output %: off
+  21.0f,    // Low Volt V: 3.5 V/cell on 6S
+  19.8f,    // Crit Volt V: 3.3 V/cell on 6S
+  1.0f,     // Batt Limit: Ramp
+  0.0f,     // Batt Source: ESCs (as before - set Divider once it's wired)
+  30.0f,    // Hold Settle °/s
+  10.0f     // Batt Limp %
 };
 
 
@@ -466,7 +518,6 @@ uint32_t lastPrintMs = 0;
 
 int roll = 0;
 int pitch = 0;
-int yaw = 0;
 
 int roll_flip = 20;
 
@@ -528,13 +579,7 @@ int RPreadings[RPnumReadings];
 int RPreadIndex = 0;
 int RPtotal = 0;
 
-const int YnumReadings = 5;
-int Yreadings[YnumReadings];
-int YreadIndex = 0;
-int Ytotal = 0;
-
 volatile int RP = 0;
-volatile int Y = 0;
 
 
 // Raw IMU values for the web page (written on core 0, read on core 1)
@@ -741,7 +786,6 @@ void setup() {
   Wire.setTimeOut(IMU_I2C_TIMEOUT_MS);
 
   for (int i = 0; i < RPnumReadings; i++) RPreadings[i] = 0;
-  for (int i = 0; i < YnumReadings; i++) Yreadings[i] = 0;
   for (int i = 0; i < ARRAY_SIZE; i++) modeArray[i] = false;
 
   setBoot("IMU init");
@@ -878,7 +922,8 @@ void setup() {
 void loop() {
 
   update_reboot();
-  vbatUpdate();  // battery voltage divider
+  vbatUpdate();     // battery voltage divider
+  batteryUpdate();  // low battery protection (battery.ino)
   crsfSetStrings(false);  // Mode / Boot text for the radio telemetry (the CRSF task does the receiving and sending)
   status();
   web();

@@ -284,7 +284,7 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
           client->text("{\"blocked\":\"params\"}");
         } else {
           for (int i = NUM_TUNE_STR; i < NUM_TUNE; i++)
-            if (!yawKeepOnDefaults(i)) tuneVal[i] = tuneDefault[i];  // calibrated values (Gyro Scale) are kept
+            if (!yawKeepOnDefaults(i) && i != T_BAT_SRC) tuneVal[i] = tuneDefault[i];  // kept: Gyro Scale (calibrated), Batt Source (wiring)
           tuneChangedMs = millis();
           tuneDirty = true;  // saved to flash shortly after, like any edit
         }

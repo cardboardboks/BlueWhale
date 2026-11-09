@@ -300,7 +300,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
   <div class="card"><h3>Quick start - first time with the defaults</h3>
     <p>The defaults are worked out for this robot (30 lb, 101 mm wheels on a 345 mm track, 19:1, 1400 KV on 6S, which spins at about 2300 °/s flat out). They're deliberately soft: a safe starting point, not a finished tune.</p>
     <ol>
-      <li><b>Load defaults</b> - press it on the tuning page after flashing (Name and WiFi boxes are kept).</li>
+      <li><b>Load defaults</b> - press it on the tuning page after flashing (kept: Name, WiFi, Gyro Scale and Batt Source).</li>
       <li><b>Check Yaw Dir before anything else.</b> Wheels off the ground, in a non-Stab mode, steer right: Bulk Text <code>Yaw … °/s</code> must go <b>positive</b>.
         If it goes negative, set Yaw Dir to Reversed. The defaults include P and I, so a wrong sign makes the controller fight you - the 0.6 Out Limit keeps that to 60% steering.</li>
       <li><b>Measure the flat-out spin.</b> Still in a non-Stab mode, full stick, read the same Bulk Text figure. If it isn't about 2300, set
@@ -746,7 +746,7 @@ function ask(detail, yesLabel, action) {
 $('btn-reset').onclick = () => ask('All records (Max G, Max ESC Temp, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
 $('btn-reboot').onclick = () => ask('The board will restart. Motors lose their signal and the page reconnects in a few seconds.', 'Yes, reboot', () => wsSend('reboot'));
 $('btn-level').onclick = () => ask('Sit the robot flat and the right way up, and keep it still. Its current position becomes upright, and up/down flips at 90 degrees from it.', 'Yes, level', () => { wsSend('level'); toast('Levelled'); });
-$('btn-pdef').onclick = () => ask('Every number box goes back to its default (yaw tuning, ESC and Yaw Dir, WiFi power). Name, SSID, Password and the other text boxes are kept. Save a .param first if you want to keep the current values.', 'Yes, load defaults', () => { wsSend('defaults'); tmsg('Defaults loaded'); });
+$('btn-pdef').onclick = () => ask('Every number box goes back to its default (yaw tuning, battery, ESC and Yaw Dir, WiFi power). Kept: Name, SSID, Password and the other text boxes, plus Gyro Scale (your calibration) and Batt Source (your wiring). Save a .param first if you want to keep the current values.', 'Yes, load defaults', () => { wsSend('defaults'); tmsg('Defaults loaded'); });
 $('btn-caloff').onclick = () => ask('Put the IMU board flat with the chip facing up and keep everything perfectly still for a few seconds. The IMU stops reporting while it runs. Clears the 6-side calibration and the Level.', 'Yes, calibrate', () => wsSend('cal_off'));
 $('btn-calside').onclick = () => wsSend('cal_side');   // rest the robot on a side, keep still ~1 s
 $('btn-calgyro').onclick = () => ask('After pressing Yes, pick the robot up (or lift its wheels) and twist it back and forth quickly - at least a couple of full turns in total, within 10 seconds. It sets Gyro Scale from the IMU\'s own orientation, and saves it.', 'Yes, start', () => wsSend('cal_gyro'));

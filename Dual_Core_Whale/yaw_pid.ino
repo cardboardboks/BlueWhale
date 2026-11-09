@@ -47,6 +47,9 @@
 #define T_HOLD_K 28      // hold strength, per second: return turn rate (°/s) per degree of heading error
 #define T_HOLD_MAX 29    // fastest return turn, °/s
 #define T_HOLD_BAND 30   // at standstill, rest when within this many degrees of the held heading
+#define T_HOLD_SETTLE 36 // after the stick is released, the heading is locked once the robot turns slower than this, °/s
+#define HOLD_SETTLE_MS 80       // ...for this long
+#define HOLD_SETTLE_MAX_MS 600  // ...or after this long anyway (a hit straight after letting go can't stop it locking)
 #define HDG_NOISE_DPS 1.5f  // measured rates below this are ignored when adding up the heading (no drift creep)
 
 // ---- telemetry (shown in Bulk Text) ----
@@ -166,6 +169,9 @@ static bool yawLastDown = false;
 static float yawHeading = 0;     // heading from adding up the measured rate, degrees (only differences matter)
 static float yawHdgTarget = 0;   // heading being held
 static bool yawHold = false;     // holding a heading
+static bool yawSettled = true;        // false from releasing the stick until the robot has come to rest
+static uint32_t yawSettleMs = 0;      // when the stick was released (0 = not settling)
+static uint32_t yawSlowSinceMs = 0;   // when the robot dropped below the settle rate (0 = not yet)
 
 // first-order low-pass blend factor for cut-off fc (Hz) at time step dt (s); fc <= 0 = no filtering
 static float lpfAlpha(float fc, float dt) {
@@ -183,6 +189,9 @@ void yawStabReset() {
   yawActive = false;
   yawITerm = 0;
   yawHold = false;
+  yawSettled = true;
+  yawSettleMs = 0;
+  yawSlowSinceMs = 0;
   yawHolding = false;
   yawHdgErr = 0;
 }
@@ -246,8 +255,36 @@ float yawStab(float stick, float throttle) {
   // ---- heading hold: with the stick centred, once the turn has finished, hold that heading ----
   float bleed = tuneVal[T_YAW_IBLEED];
   float hdgErr = 0;
+  // ---- settling after a manual turn ----
+  // When the stick is released, the robot is still braking and overshoots a little. Two things used to pull it back
+  // 10-15° afterwards: the I term (it had built up "where the robot should have stopped") and heading hold locking
+  // the heading as soon as the requested rate reached 0. So from release until the robot is turning slower than
+  // Hold Settle for HOLD_SETTLE_MS (or HOLD_SETTLE_MAX_MS at most): I is cleared and held at 0, and the heading is
+  // only locked once it has come to rest - wherever that is. After that, knocks with no stick input are fought by
+  // I and heading hold as normal.
+  if (noTurn) {
+    if (!yawSettled && !fresh) {
+      uint32_t now = millis();
+      if (yawSettleMs == 0) yawSettleMs = now;
+      float settle = tuneVal[T_HOLD_SETTLE];
+      bool slow = !(settle > 0) || fabsf(yawMeasF) < settle;
+      if (fabsf(yawSp) < 1.0f && slow) {
+        if (yawSlowSinceMs == 0) yawSlowSinceMs = now;
+      } else {
+        yawSlowSinceMs = 0;
+      }
+      if ((yawSlowSinceMs != 0 && now - yawSlowSinceMs >= HOLD_SETTLE_MS) || now - yawSettleMs >= HOLD_SETTLE_MAX_MS)
+        yawSettled = true;
+    }
+  } else {
+    yawSettled = false;
+    yawSettleMs = 0;
+    yawSlowSinceMs = 0;
+  }
+  bool settling = noTurn && !yawSettled;
+
   if (tuneVal[T_HOLD_ON] >= 0.5f && noTurn) {
-    if (!yawHold && !fresh && fabsf(yawSp) < 1.0f) {  // the requested turn has wound down to nothing: take this heading
+    if (!yawHold && yawSettled) {  // come to rest: hold this heading
       yawHold = true;
       yawHdgTarget = yawHeading;
     }
@@ -263,7 +300,7 @@ float yawStab(float stick, float throttle) {
       target = constrain(tuneVal[T_HOLD_K] * he, -hmax, hmax);  // turn back toward the held heading
     }
   } else {
-    yawHold = false;  // stick moved (or hold off): it takes a new heading when the stick is centred again
+    yawHold = false;  // stick moved (or hold off): it takes a new heading when it comes to rest again
   }
 
   if (fresh) {
@@ -303,8 +340,10 @@ float yawStab(float stick, float throttle) {
     if (fabsf(yawI) < 0.002f) yawI = 0;  // fully let go: no crumb left to nudge the output
   }
 
+  if (settling) yawI = 0.0f;  // just let go of the stick: no I until it has come to rest (see settling above)
+
   float base = ff + pTerm + dTerm;
-  float iNew = (ki > 0) ? constrain(yawI + ki * e * dt, -iLim, iLim) : 0.0f;
+  float iNew = (ki > 0 && !settling) ? constrain(yawI + ki * e * dt, -iLim, iLim) : 0.0f;
   float u = base + iNew;
   // anti-windup: if the output is already pinned and the error would push it further, don't let I grow
   if (fabsf(u) > oLim && ((u > 0) == (e > 0)) && fabsf(iNew) > fabsf(yawI)) iNew = (ki > 0) ? yawI : 0.0f;

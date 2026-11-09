@@ -308,15 +308,6 @@ void imuTask(void *arg) {
       if (imuWarm < IMU_WARMUP) imuWarm++;  // let the DMP settle after (re)start before recording
       else if (g > recMaxG) recMaxG = g;
 
-      yaw = abs(gy.z);
-
-      Ytotal -= Yreadings[YreadIndex];
-      Yreadings[YreadIndex] = yaw;
-      Ytotal += Yreadings[YreadIndex];
-      YreadIndex = (YreadIndex + 1) % YnumReadings;
-
-      int y = Ytotal / YnumReadings;
-      Y = (y > 1400) ? 1400 : y;
     }
   }
 }

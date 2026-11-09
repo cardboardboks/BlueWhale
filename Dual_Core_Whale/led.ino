@@ -89,6 +89,8 @@ void ledTask(void *pvParameters) {
       for (int i = 0; i < NUM_ESC; i++) {
         if (escLedAlert(i) && ESC_LED_COUNT[i] > 0) static_led(ESC_LED_FIRST[i], ESC_LED_COUNT[i], on ? ESC_LED_COLOR : 0x000000);
       }
+      // ---- low battery: a quick red flash on every LED, every 5 s at Low Volt down to every 0.5 s at Crit ----
+      if (battLedFlash()) static_led(0, NUM_LEDS, 0xFF0000);
     }
 
     showLeds();
