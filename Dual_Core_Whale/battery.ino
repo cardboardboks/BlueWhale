@@ -16,6 +16,12 @@
 // While no motor is turning, the frozen value isn't trusted: the cap is allowed to recover and the cut can clear on
 // disarm; as soon as the motors turn, fresh readings take over again. (With the divider this doesn't apply.)
 //
+// Warm-up: when a voltage reading first appears - at power-up, after the reading was lost, or when Batt Source is
+// switched - it isn't acted on for BATT_WARMUP_MS. An ESC that reconnects is also left out of the average until it has
+// been running normally for BATT_WARMUP_MS. The first readings climb up from low values (AM32 smooths its own
+// voltage measurement starting from 0; the divider's capacitor charges after plug-in), which gave a moment of low
+// battery limiting on the first arm after a cold start. After the warm-up the smoothing starts from a settled reading.
+//
 // LEDs (led.ino): below Low Volt all LEDs flash red briefly, every 5 s at Low getting quicker to every 0.5 s at Crit
 // (and 0.5 s while cut), over the normal pattern.
 //
@@ -27,6 +33,7 @@
 #define BATT_TAU_S 0.5f      // voltage smoothing time constant
 #define BATT_CUT_DELAY_MS 1000
 #define BATT_RECOVER_S 2.0f  // the cap climbs back from 0 to full over this long
+#define BATT_WARMUP_MS 3000  // a new voltage reading is shown but not acted on for this long (see below)
 #define BATT_FLASH_MS 80     // length of each red LED flash
 #define BATT_FLASH_SLOW_MS 5000
 #define BATT_FLASH_FAST_MS 500
@@ -40,6 +47,8 @@ volatile float battWarn = -1.0f;   // LED warning: -1 none, 0 at Low Volt .. 1 a
 // Called from loop() every pass; does its work every 10 ms
 void batteryUpdate() {
   static uint32_t lastMs = 0, belowSinceMs = 0;
+  static uint32_t seenSinceMs = 0;  // when the current reading first appeared (0 = no reading)
+  static uint8_t lastSrc = 0;
   static float vf = NAN, cap = 1.0f;
   uint32_t now = millis();
   if (now - lastMs < 10) return;
@@ -60,6 +69,9 @@ void batteryUpdate() {
     bool turning = false;
     for (int i = 0; i < NUM_ESC; i++) {
       if (!escPresent(i)) continue;
+      // an ESC that's lost / re-arming, or back for less than the warm-up, isn't counted: after a reconnect its
+      // voltage climbs up from low again and would drag the average down
+      if (escMonitorOn && (escState[i] != ESC_OK || now - escStateMs[i] < BATT_WARMUP_MS)) continue;
       float ev = escVolts(i);
       if (!isfinite(ev) || ev < 1.0f) continue;
       sum += ev;
@@ -74,10 +86,16 @@ void batteryUpdate() {
   }
   battSrc = src;
 
+  // ---- warm-up: a reading that's just appeared isn't trusted yet ----
+  if (!isfinite(v) || src != lastSrc) seenSinceMs = 0;  // gone, or switched source: warm up again when it's back
+  lastSrc = src;
+  if (isfinite(v) && seenSinceMs == 0) seenSinceMs = now ? now : 1;
+  bool warming = isfinite(v) && (now - seenSinceMs < BATT_WARMUP_MS);
+
   float low = tuneVal[T_BAT_LOW], crit = tuneVal[T_BAT_CRIT];
   bool on = (low > 0 && crit > 0 && low > crit);
-  if (!on || !isfinite(v)) {  // off, or nothing to measure: no limit
-    vf = v;
+  if (!on || !isfinite(v) || warming) {  // off, nothing to measure, or still warming up: no limit
+    vf = warming ? NAN : v;  // after a warm-up, the smoothing starts fresh from a settled reading
     cap = 1.0f;
     battCut = false;
     battCapNow = 1.0f;

@@ -480,9 +480,8 @@ unsigned long lastUpdate = 0;
 
 // ---------------- Hardware ----------------
 // ESC signal pins, in web-page order (ESC 1..4).
-// ESC 1 = GPIO 2 and ESC 2 = GPIO 1, matching your original (swapped) begin() calls.
-// ESC 3 and ESC 4 pins are a guess - change them to wherever you wire them.
-const int ESC_PINS[MAX_ESC] = { 2, 1, 16, 15 };
+// ESC 1 = GPIO 1 and ESC 2 = GPIO 2 ESC 3 = GPIO 15 and ESC 4 = GPIO 16
+const int ESC_PINS[MAX_ESC] = { 1, 2, 15, 16 };
 const uint8_t MOTOR_POLES = 14;
 
 AlfredoDShot escs[NUM_ESC];
@@ -490,8 +489,8 @@ AlfredoDShot escs[NUM_ESC];
 ESPCpuMonitor cpuMonitor;
 bool cpuMonitorOk = false;  // only true once init() succeeded; getLastSample() on an un-started monitor would crash
 
-#define PIN_RX 5
-#define PIN_TX 4
+#define PIN_RX 4
+#define PIN_TX 5
 
 // Must match DATA_TYPE / STATUS_TYPE / VERSION in /SCRIPTS/WHALE/whale_decode.lua
 #define CRSF_TYPE_VI_DATA 0x42
