@@ -86,6 +86,8 @@ bool autotuneRunning();                     // autotune.ino
 bool autotuneUpdate(float stickThr, float stickSteer, float *steer);  // autotune.ino
 void autotuneJson(JsonObject at);
 uint32_t yawImuSeqNow();                    // yaw_pid.ino
+void ledTestSet(bool on);                   // led.ino
+bool ledTestOn();
 void hitSample(float ax, float ay, float az, float qw, float qx, float qy, float qz, float rateDps, int rawMaxAcc,
                uint32_t us);                // hits.ino
 uint32_t yawImuUsNow();           // autotune.ino
@@ -224,7 +226,7 @@ void vbatUpdate() {
 // ---- Whale Tuning ----
 // Rename them here. Use tuneVal[n] anywhere in your code; editing a box on the page changes it live.
 // Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
-#define NUM_TUNE 61
+#define NUM_TUNE 69
 #define T_BAT_LIMP 37  // Batt Limp %: drive the battery protection always leaves in IMU Off mode (mixer.ino)
 #define T_MIN_OUT 31  // Min Output %: smallest non-zero drive output per wheel (mixer.ino)
 const char *tuneName[NUM_TUNE] = {
@@ -242,7 +244,9 @@ const char *tuneName[NUM_TUNE] = {
   "TC Min °/s", "TC Min %", "TC Drop /s", "TC Rise /s", "Motor Poles", "Gear Ratio",
   "Wheel Dia mm",
   "ESC1 Role", "ESC2 Role", "ESC3 Role", "ESC4 Role",
-  "AT Aggr", "Stab Steer %", "Mass kg", "Length mm", "Width mm"
+  "AT Aggr", "Stab Steer %", "Mass kg", "Length mm", "Width mm",
+  "LEDs 1-3 Pos", "LEDs 1-3 Dir", "LEDs 4-6 Pos", "LEDs 4-6 Dir", "LEDs 7-9 Pos", "LEDs 7-9 Dir",
+  "LEDs 10-12 Pos", "LEDs 10-12 Dir"
 };
 // The yaw stabilisation boxes (6-15, 20-30, 36) are used by yaw_pid.ino, which names them (T_YAW_...).
 // Shown when the ? next to a box is tapped on the Whale Tuning page. Keep each in step with its name above.
@@ -397,7 +401,19 @@ const char *tuneHelp[NUM_TUNE] = {
   "Robot length, mm, overall. Only used for the Biggest Hit record: with Width, how hard the robot is to spin "
   "(treated as an even slab). 0 = guessed from Track mm + Wheel Dia mm. Kept by Load defaults.",
   "Robot width, mm, overall. Only used for the Biggest Hit record - see Length. 0 = guessed from Track mm + Wheel "
-  "Dia mm. Kept by Load defaults."
+  "Dia mm. Kept by Load defaults.",
+  "Where the first three LEDs along the chain (nearest the ESP32) are on the robot: Top / Bottom face, Left / Right "
+  "side. All the LED effects are worked out by position, so set each group to where it really is - each position "
+  "once. Use Show LED layout to check. Kept by Load defaults.",
+  "Which way round LEDs 1-3 are: Front = the first of the three along the chain is the one nearest the front of "
+  "the robot; Back = it's the one nearest the back. Show LED layout lights the front one white. Kept by Load "
+  "defaults.",
+  "Where LEDs 4-6 along the chain are - see LEDs 1-3 Pos.",
+  "Which way round LEDs 4-6 are - see LEDs 1-3 Dir.",
+  "Where LEDs 7-9 along the chain are - see LEDs 1-3 Pos.",
+  "Which way round LEDs 7-9 are - see LEDs 1-3 Dir.",
+  "Where LEDs 10-12 along the chain are - see LEDs 1-3 Pos.",
+  "Which way round LEDs 10-12 are - see LEDs 1-3 Dir."
 };
 volatile float tuneVal[NUM_TUNE] = { 0 };
 
@@ -408,6 +424,7 @@ const char *tuneGroups =
   "|Battery:35,32,33,34,37"
   "|Protection:39,40,45,46,47,48,41,42,43,44"
   "|Hardware:52,53,54,55,16,17,18,19,31,38,49,50,51,58,59,60,22,23"
+  "|LEDs:61,62,63,64,65,66,67,68"
   "|Software:0,1,2,3,5,4";
 
 // Tuning boxes used by more than one tab (the rest are defined in the tab that uses them)
@@ -421,6 +438,7 @@ const char *tuneGroups =
 #define AT_TEST_TRACTION 1
 #define AT_TEST_FF 2
 #define AT_TEST_PID 3
+#define T_LED_POS 61     // 61..68: LEDs 1-3 Pos, LEDs 1-3 Dir, LEDs 4-6 Pos, ... (led.ino)
 #define T_MASS_KG 58     // Mass kg, Length mm, Width mm: only for the Biggest Hit record (hits.ino)
 #define T_LEN_MM 59
 #define T_WID_MM 60
@@ -447,7 +465,10 @@ const char *tuneChoice[NUM_TUNE] = {
   nullptr,
   "1:Left|2:Right|3:Weapon|4:Spare", "1:Left|2:Right|3:Weapon|4:Spare",
   "1:Left|2:Right|3:Weapon|4:Spare", "1:Left|2:Right|3:Weapon|4:Spare",
-  nullptr, nullptr, nullptr, nullptr, nullptr
+  nullptr, nullptr, nullptr, nullptr, nullptr,
+  "1:Top L|2:Top R|3:Bot L|4:Bot R", "0:Front|1:Back", "1:Top L|2:Top R|3:Bot L|4:Bot R",
+  "0:Front|1:Back", "1:Top L|2:Top R|3:Bot L|4:Bot R", "0:Front|1:Back",
+  "1:Top L|2:Top R|3:Bot L|4:Bot R", "0:Front|1:Back"
 };
 #define T_WIFI_POWER 5   // 1 low, 2 medium, 3 high (0 / anything else = high)
 #define T_ESC_DIR 16     // 16..19: ESC 1..4 direction, 0 normal, 1 reversed
@@ -506,7 +527,8 @@ const float tuneDefault[NUM_TUNE] = {
   0.5f,        // AT Aggr: medium
   100,         // Stab Steer %: full stick = full Max Rate
   13.6f,       // Mass kg: 30 lb
-  0, 0         // Length / Width mm: not measured yet (guessed from the wheels)
+  0, 0,        // Length / Width mm: not measured yet (guessed from the wheels)
+  1, 0, 3, 0, 2, 0, 4, 0  // LED groups: the original wiring - 1-3 top left, 4-6 bottom left, 7-9 top right, 10-12 bottom right
 };
 
 

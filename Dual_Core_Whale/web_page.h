@@ -119,7 +119,9 @@ body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 
 .modal.show { display: flex; }
 button:disabled { opacity: .35; pointer-events: none; }
 .tv input:disabled { opacity: .45; }
-#c-cal, #c-at { margin-top: 5px; }
+#c-cal, #c-at, #c-led { margin-top: 5px; }
+#c-led .tfile { margin: 4px 0 0; }
+#led-msg { text-align: left; color: var(--val); }
 #c-at .tfile { margin: 4px 0 0; }
 #at-msg, #at-res { text-align: left; color: var(--val); }
 #at-res { color: #fff; font-weight: 600; }
@@ -296,6 +298,10 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <button class="nav" id="btn-at-apply" hidden>Apply</button>
       <button class="reset" id="btn-at-discard" hidden>Discard</button>
     </div>
+  </div>
+  <div class="card" id="c-led"><h2>LED Layout</h2>
+    <div class="kv"><span id="led-msg">Lights each position in its own colour: Top L red, Top R green, Bot L blue, Bot R yellow. In each group the front LED is white, then bright, then dim at the back. Stops on arming, or after a minute.</span></div>
+    <div class="tfile"><button class="nav" id="btn-led">Show LED layout</button></div>
   </div>
   <div class="card" id="c-cal"><h2>IMU Calibration</h2>
     <div class="kv"><span>Gyro + accel offsets</span><span class="v" id="cal-offs">--</span></div>
@@ -511,6 +517,8 @@ function buildTune(n, choice, groups) {
   if (hw) hw.appendChild($('c-cal'));
   const yt = document.querySelector('#tgrid .tsec[data-t="Yaw Tuning"]');   // autotune sits with the yaw tuning
   if (yt) yt.appendChild($('c-at'));
+  const ls = document.querySelector('#tgrid .tsec[data-t="LEDs"]');   // the layout check sits with the LED boxes
+  if (ls) ls.appendChild($('c-led'));
   for (let i = 0; i < n; i++) {
     const inp = $('tin' + i);
     inp.addEventListener('change', e => {
@@ -603,7 +611,7 @@ function initWebSocket() {
 
 function onMessage(event) {
   const d = JSON.parse(event.data);
-  if (d.blocked) { toast({ reboot: 'Armed - reboot blocked', level: 'Armed - level locked', cal: 'Armed - calibration locked', at: 'Armed - start / apply autotune while disarmed', imu: 'No IMU - can\'t level' }[d.blocked] || 'Armed - tuning locked'); return; }
+  if (d.blocked) { toast({ reboot: 'Armed - reboot blocked', level: 'Armed - level locked', cal: 'Armed - calibration locked', at: 'Armed - start / apply autotune while disarmed', led: 'Armed - LED layout check while disarmed', imu: 'No IMU - can\'t level' }[d.blocked] || 'Armed - tuning locked'); return; }
   if (d.armed !== undefined) setLocked(!!d.armed, !!d.noreboot);
   lastMsg = Date.now();
 
@@ -741,6 +749,10 @@ function onMessage(event) {
     $('i-state').className = !imuOk ? "bad" : !lvl ? "warn" : "";
     ['i-gx','i-gy','i-gz','i-ax','i-ay','i-az','v-rg','i-tilt'].forEach(id => $(id).classList.toggle('stale', !imuOk));
     set('i-ud', m.ud > 0 ? "⬆️" : m.ud < 0 ? "⬇️" : "--");
+    if (d.ledt !== undefined) {   // Show LED layout running?
+      ledTestOnNow = !!d.ledt;
+      set('btn-led', ledTestOnNow ? 'Stop LED layout' : 'Show LED layout');
+    }
     if (d.at) {   // autotune
       const a = d.at;   // st: 0 idle, 1 waiting for arm, 2 running, 3 results ready
       set('at-msg', a.msg || 'Start a test while disarmed, then arm with the sticks centred.');
@@ -788,6 +800,8 @@ $('btn-calside').onclick = () => wsSend('cal_side');   // rest the robot on a si
 $('btn-at-tc').onclick = () => ask('Traction calibration: the robot spins itself gently on the spot, 6 times, alternating direction (~13 s). Needs a clear area, wheels on the floor and Yaw Dir correct. After Yes: ARM with both sticks centred to start. Disarm or move a stick to stop it at once.', 'Yes, set it up', () => wsSend('at_tc'));
 $('btn-at-ff').onclick = () => ask('FF & accel test: the robot spins itself on the spot at 50, 75 and 100% turning, 6 times, alternating direction, with rests (~15 s). Needs a clear area, wheels on the floor and Yaw Dir correct. After Yes: ARM with both sticks centred to start. Disarm or move a stick to stop it at once.', 'Yes, set it up', () => wsSend('at_ff'));
 $('btn-at-pid').onclick = () => ask('PID test: the robot spins steadily one way at half your Max Rate, then the spin is wobbled slightly faster / slower until it can be measured, without letting the tyres slip (~6-15 s). Run the FF test first. Needs a clear area, wheels on the floor and Yaw Dir correct. After Yes: ARM with both sticks centred to start. Disarm or move a stick to stop it at once.', 'Yes, set it up', () => wsSend('at_pid'));
+let ledTestOnNow = false;
+$('btn-led').onclick = () => wsSend(ledTestOnNow ? 'led_off' : 'led_on');
 $('btn-at-stop').onclick = () => wsSend('at_stop');
 $('btn-at-apply').onclick = () => wsSend('at_apply');
 $('btn-at-discard').onclick = () => wsSend('at_discard');

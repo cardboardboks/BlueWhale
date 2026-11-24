@@ -220,6 +220,7 @@ String getSerializedData(bool full) {
   if (imuLevelled) imu["tilt"] = (float)imuTiltDeg;  // degrees from the levelled upright (left out until levelled)
   imu["lvl"] = (bool)imuLevelled;
   autotuneJson(doc["at"].to<JsonObject>());     // autotune status / results for the Tuning page
+  doc["ledt"] = ledTestOn();                     // Show LED layout running
   JsonObject cal = imu["cal"].to<JsonObject>();  // calibration status for the Tuning page
   cal["offs"] = (bool)imuOffsValid;
   cal["acal"] = (bool)accCalValid;
@@ -266,6 +267,12 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
       if (len == 5 && memcmp(data, "reset", 5) == 0) resetRecords();
+      // Show LED layout (led.ino): start only while disarmed; stop any time
+      else if (len == 7 && memcmp(data, "led_off", 7) == 0) ledTestSet(false);
+      else if (len == 6 && memcmp(data, "led_on", 6) == 0) {
+        if (armSwitchHigh()) client->text("{\"blocked\":\"led\"}");
+        else ledTestSet(true);
+      }
       // Autotune (autotune.ino): start / apply only while disarmed; Stop and Discard work any time
       else if (len >= 5 && memcmp(data, "at_", 3) == 0) {
         bool startOrApply = (len == 5 && (memcmp(data, "at_tc", 5) == 0 || memcmp(data, "at_ff", 5) == 0)) ||
@@ -310,9 +317,9 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
           client->text("{\"blocked\":\"params\"}");
         } else {
           for (int i = NUM_TUNE_STR; i < NUM_TUNE; i++)
-            if (!yawKeepOnDefaults(i) && i != T_BAT_SRC && i != T_POLES && i != T_GEAR && i != T_WHEEL_MM && i != T_MASS_KG && i != T_LEN_MM && i != T_WID_MM &&
+            if (!yawKeepOnDefaults(i) && i != T_BAT_SRC && i != T_POLES && i != T_GEAR && i != T_WHEEL_MM && i != T_MASS_KG && i != T_LEN_MM && i != T_WID_MM && !(i >= T_LED_POS && i < T_LED_POS + 8) &&
                 !(i >= T_ESC_ROLE && i < T_ESC_ROLE + MAX_ESC))
-              tuneVal[i] = tuneDefault[i];  // kept: Gyro Scale (calibrated), Batt Source, Motor Poles, Gear Ratio, Wheel Dia, Mass, Length, Width, ESC Roles (hardware)
+              tuneVal[i] = tuneDefault[i];  // kept: Gyro Scale (calibrated), Batt Source, Motor Poles, Gear Ratio, Wheel Dia, Mass, Length, Width, LED Pos / Dir, ESC Roles (hardware)
           tuneChangedMs = millis();
           tuneDirty = true;  // saved to flash shortly after, like any edit
         }
