@@ -12,7 +12,8 @@
 // 3 rainbow top: vehicle safe top
 // 17 rainbow bottom: vehicle safe bottom
 // 4 all fast blinking red/black: rc failsafe
-// orange blink on the left / right LEDs (top and bottom): the ESC driving that side is lost / rebooting
+// orange blink on the left / right LEDs (top and bottom): the ESC driving that side is lost / rebooting (not during
+//   an RC failsafe: its red takes priority)
 // 7 when auto up is off: all blinking purple/black (stabilisation not available)
 // 16 when imu is not online: all blinking purple/red (stabilisation not available)
 //  the LEDs on the face that's up show the status; the face that's down is all red. Without a working, levelled
@@ -73,13 +74,16 @@ void fade_led(int mask, int freq, uint32_t colorA, uint32_t colorB) {
   for (int k = 0; k < LED_PER_GROUP; k++) setPos(mask, k, r, g, b);
 }
 
+#define RAINBOW_STEP 40  // hue difference between neighbouring LEDs in a group (256 = all the way round)
+
 void rainbow_led(int mask, int freq) {
-  // Hue derived from time, so every call (and every group) stays in sync; it steps along front to back
+  // Hue from the time, so every group shows exactly the same colours at the same moment (all four in sync). Within
+  // a group the hue lags by RAINBOW_STEP per LED from the front, so the colours flow front -> back.
   uint8_t hue = millis() / freq;
   for (int p = 0; p < LED_GROUPS; p++) {
     if (!(mask & (1 << p))) continue;
     for (int k = 0; k < LED_PER_GROUP; k++) {
-      uint8_t h = hue + (p * LED_PER_GROUP + k) * (256 / NUM_LEDS);
+      uint8_t h = hue - k * RAINBOW_STEP;
       // quick HSV(h,255,64) -> RGB
       uint8_t region = h / 43, rem = (h - region * 43) * 6;
       uint8_t v = 64, q = (v * (255 - rem)) >> 8, t = (v * rem) >> 8;
@@ -193,11 +197,11 @@ void ledTask(void *pvParameters) {
       }
     }
 
-    // ---- ESC lost / rebooting: blink orange on that ESC's side, over whatever is showing (not during an update
-    //      or the layout check) ----
+    // ---- ESC lost / rebooting: blink orange on that ESC's side, over whatever is showing (not during an update,
+    //      the layout check or an RC failsafe - no radio is the bigger problem, so its red keeps every LED) ----
     if (!otaInProgress && !ledTestOn()) {
       bool on = (millis() / ESC_LED_BLINK_MS) & 1;
-      for (int i = 0; i < NUM_ESC; i++) {  // the side follows what the ESC drives (ESC Role boxes)
+      for (int i = 0; i < NUM_ESC && modeArray[4] != 1; i++) {  // the side follows what the ESC drives (ESC Role boxes)
         if (!escLedAlert(i)) continue;
         int role = escRole(i);
         if (role == ROLE_LEFT) static_led(P_LEFT, on ? ESC_LED_COLOR : 0x000000);
