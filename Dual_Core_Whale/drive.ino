@@ -4,9 +4,6 @@ void drive_escs(int thr1, int thr2) {
   static bool timing = false;
   static bool triggered = false;
 
-  outChannel[0] = throttle1;
-  outChannel[1] = throttle2;
-
   // channel 5 held high for ESC_REBOOT_HOLD_MS: reboot every ESC (once per hold - let go to do it again)
   if (txchannel[ESC_REBOOT_CH] > ESC_REBOOT_US) {
     if (!timing) {
@@ -83,48 +80,22 @@ void drive_escs(int thr1, int thr2) {
     throttle2 = thr2;
   }
 
-  // ESC reconnect: watch each ESC's telemetry, re-initialise any that dropped out, and ramp the
-  // command (1000-2000, before scaling) of one that has just come back
-  thr1 = escMonitorUpdate(0, thr1);
-  if (NUM_ESC > 1) thr2 = escMonitorUpdate(1, thr2);
-  for (int i = 2; i < NUM_ESC; i++) escMonitorUpdate(i, 0);
-
-  // ESC Dir boxes: reverse a motor in software (1000..2000 mirrored about 1500; 0 = disarm stays 0)
-  if (NUM_ESC > 0 && tuneVal[T_ESC_DIR + 0] >= 0.5f && thr1 != 0) thr1 = 3000 - thr1;
-  if (NUM_ESC > 1 && tuneVal[T_ESC_DIR + 1] >= 0.5f && thr2 != 0) thr2 = 3000 - thr2;
-
-  //scale 1000-2000 range to dshot 3d mode lower and upper halves. if throttle centred send esc disarm command
-  if (thr1 == 0) {
-    thr1 = 0;
-  } else if (thr1 == 1500) {
-    thr1 = 0;
-  } else {
-    if (thr1 < 1500) {
-      thr1 = map(thr1, 1000, 1499, 1047, 48);
-    }
-    if (thr1 > 1500) {
-      thr1 = map(thr1, 1501, 2000, 1049, 2047);
-    }
-  }
-
-  //scale 1000-2000 range to dshot 3d mode lower and upper halves. if throttle centred send esc disarm command
-  if (thr2 == 0) {
-    thr2 = 0;
-  } else if (thr2 == 1500) {
-    thr2 = 0;
-  } else {
-    if (thr2 < 1500) {
-      thr2 = map(thr2, 1000, 1499, 1047, 48);
-    }
-    if (thr2 > 1500) {
-      thr2 = map(thr2, 1501, 2000, 1049, 2047);
-    }
-  }
-
   // Work out each ESC's final command here, then write throttleCmd once. The DShot task can send at any moment
   // (it runs above loop()), so throttleCmd must never hold a value that isn't meant to go out - writing the stick
   // value first and zeroing it afterwards let a lost / re-arming ESC catch the odd frame of real throttle.
-  float cmd[MAX_ESC] = { (float)thr1, (float)thr2, 0.0f, 0.0f };
+  float cmd[MAX_ESC] = { 0.0f, 0.0f, 0.0f, 0.0f };
+  for (int i = 0; i < NUM_ESC; i++) {
+    // route the left / right drive commands (1000-2000, 0 = disarm) to the ESC outputs by their ESC Role boxes;
+    // Weapon and Spare outputs get stop for now
+    int role = escRole(i);
+    int t = (role == ROLE_LEFT) ? thr1 : (role == ROLE_RIGHT) ? thr2 : 0;
+    outChannel[i] = (role == ROLE_LEFT) ? throttle1 : (role == ROLE_RIGHT) ? throttle2 : 0;  // dashboard: per ESC output
+
+    t = escMonitorUpdate(i, t);  // ESC reconnect: re-initialise one that dropped out, ramp one that's just come back
+
+    if (tuneVal[T_ESC_DIR + i] >= 0.5f && t != 0) t = 3000 - t;  // ESC Dir: reverse this motor in software
+    cmd[i] = (float)dshot3d(t);
+  }
 
   // an ESC that is lost / re-arming only ever gets zero (disarmed); while ramping it gets the ramped command
   bool escMsg = false;
@@ -141,6 +112,13 @@ void drive_escs(int thr1, int thr2) {
 
   // The DShot task (below) sends throttleCmd every 1 ms. Stamp the time so it knows these are fresh.
   escCmdStampMs = millis();
+}
+
+// 1000-2000 (1500 = stop, 0 = disarm) -> DShot 3D mode: lower half 1047..48 = reverse, upper half 1049..2047 = forward
+static int dshot3d(int t) {
+  if (t == 0 || t == 1500) return 0;
+  if (t < 1500) return map(t, 1000, 1499, 1047, 48);
+  return map(t, 1501, 2000, 1049, 2047);
 }
 
 // ---------------- DShot task ----------------
@@ -226,7 +204,7 @@ void escTick() {
     escSnapV[i] = escs[i].voltage();
     escSnapA[i] = escs[i].current();
     escSnapT[i] = escs[i].temperatureC();
-    escSnapRpm[i] = escs[i].rpm();
+    escSnapRpm[i] = escs[i].erpm() * 2.0f / motorPoles();  // motor RPM, using the Motor Poles box (live)
     const AlfredoDShot::Stats &st = escs[i].stats();  // the library's reply counters
     escStOk[i] = st.ok;
     escStNoRep[i] = st.noReply;
@@ -453,8 +431,8 @@ float escCurrent(int i) {
 }
 
 float escSpeed(int i) {
-  float rpmOut = escRpm(i) / gearbox_ratio[i];
-  float spd = (wheel_diamiter[i] / 10) * rpmOut * 0.001885;
+  float rpmOut = escRpm(i) / gearRatio();
+  float spd = (wheelDiaMm() / 10.0f) * rpmOut * 0.001885f;  // km/h (diameter in cm x rpm x pi x 60 / 100000)
   // The ESC's eRPM telemetry has no direction in it, so the sign comes from the command:
   // an output below 1500 means the motor was told to run backwards, so the speed shows negative.
   return (outChannel[i] < 1500) ? -spd : spd;

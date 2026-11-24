@@ -68,6 +68,27 @@ float battCap();                            // battery.ino
 bool battIsCut();                           // battery.ino
 bool battLedFlash();                        // battery.ino
 String battStatusLine();                    // battery.ino
+void protectTraction(float &left, float &right, bool enabled);  // protect.ino
+void protectWheels(float &left, float &right);    // protect.ino
+bool tcLimiting();                          // protect.ino
+String protectStatusLine();                 // protect.ino
+float yawRateStick();                       // yaw_pid.ino
+float motorPoles();                         // main sketch (Motor Poles box)
+float gearRatio();                          // main sketch (Gear Ratio box)
+float wheelDiaMm();                         // main sketch (Wheel Dia mm box)
+static int dshot3d(int t);                  // drive.ino
+float wheelDiffMs();                        // protect.ino
+void autotuneRequest(uint8_t kind);         // autotune.ino
+void autotuneStop();                        // autotune.ino
+void autotuneApply();                       // autotune.ino
+void autotuneDiscard();                     // autotune.ino
+bool autotuneRunning();                     // autotune.ino
+bool autotuneUpdate(float stickThr, float stickSteer, float *steer);  // autotune.ino
+void autotuneJson(JsonObject at);
+uint32_t yawImuSeqNow();                    // yaw_pid.ino
+void hitSample(float ax, float ay, float az, float qw, float qx, float qy, float qz, float rateDps, int rawMaxAcc,
+               uint32_t us);                // hits.ino
+uint32_t yawImuUsNow();           // autotune.ino
 
 spi_device_handle_t ledDev;  // SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 
@@ -136,6 +157,12 @@ volatile float recMaxA = 0;           // highest current seen on any single ESC
 volatile float recMaxTotalA = 0;      // highest COMBINED current of all reporting ESCs added together
 volatile float recMinV = 0;           // lowest voltage seen on any ESC (0 = nothing recorded yet)
 volatile float recMaxSpd = 0;         // highest AVERAGE speed (average of the ESCs reporting)
+// Biggest Hit (hits.ino): written by the IMU task (core 0), read by the web page - all four under recHitMux
+portMUX_TYPE recHitMux = portMUX_INITIALIZER_UNLOCKED;
+float recHitJ = 0;                    // its energy, J (0 with no Mass entered)
+float recHitDv = 0;                   // speed change, m/s
+float recHitDw = 0;                   // spin change, °/s
+bool recHitClip = false;              // the accelerometer / gyro hit its limit during it: the real hit was bigger
 
 void resetRecords() {
   recMaxG = 0;
@@ -144,6 +171,10 @@ void resetRecords() {
   recMaxTotalA = 0;
   recMinV = 0;
   recMaxSpd = 0;
+  portENTER_CRITICAL(&recHitMux);
+  recHitJ = recHitDv = recHitDw = 0;
+  recHitClip = false;
+  portEXIT_CRITICAL(&recHitMux);
 }
 
 // ---- Battery voltage from a resistor divider ----
@@ -193,7 +224,7 @@ void vbatUpdate() {
 // ---- Whale Tuning ----
 // Rename them here. Use tuneVal[n] anywhere in your code; editing a box on the page changes it live.
 // Values are saved to flash (see saveTune) and reloaded at boot; 0 is used until something has been saved.
-#define NUM_TUNE 38
+#define NUM_TUNE 61
 #define T_BAT_LIMP 37  // Batt Limp %: drive the battery protection always leaves in IMU Off mode (mixer.ino)
 #define T_MIN_OUT 31  // Min Output %: smallest non-zero drive output per wheel (mixer.ino)
 const char *tuneName[NUM_TUNE] = {
@@ -206,7 +237,12 @@ const char *tuneName[NUM_TUNE] = {
   "Heading Hold", "Hold Strength", "Hold Max °/s", "Hold Band °",
   "Min Output %",
   "Low Volt V", "Crit Volt V", "Batt Limit", "Batt Source",
-  "Hold Settle °/s", "Batt Limp %"
+  "Hold Settle °/s", "Batt Limp %",
+  "Track mm", "Traction Ctrl", "TC Slip %", "Stall Protect", "Stall Time s", "Protect %", "ESC Max °C",
+  "TC Min °/s", "TC Min %", "TC Drop /s", "TC Rise /s", "Motor Poles", "Gear Ratio",
+  "Wheel Dia mm",
+  "ESC1 Role", "ESC2 Role", "ESC3 Role", "ESC4 Role",
+  "AT Aggr", "Stab Steer %", "Mass kg", "Length mm", "Width mm"
 };
 // The yaw stabilisation boxes (6-15, 20-30, 36) are used by yaw_pid.ino, which names them (T_YAW_...).
 // Shown when the ? next to a box is tapped on the Whale Tuning page. Keep each in step with its name above.
@@ -305,17 +341,94 @@ const char *tuneHelp[NUM_TUNE] = {
   "requested turn reaches zero (the old behaviour).",
   "In IMU Off mode (ch4 high) the battery protection never caps the drive below this %, even after a cut - so you "
   "can always show the robot moving. Only affects IMU Off mode; the other modes are capped and cut as normal. "
-  "0 = IMU Off mode is capped and cut like the rest."
+  "0 = IMU Off mode is capped and cut like the rest.",
+  "Distance between the left and right wheel centres, mm. Traction control uses it to work out how fast the wheels "
+  "should be turning the robot. Measure it on the robot.",
+  "Turning traction control. Compares how fast the wheels should be turning the robot with what the gyro says it is "
+  "really doing; if the wheels are spinning (more than TC Slip % faster), it backs off just the turning part of the "
+  "output until they grip - quicker, more controlled turns on a slippy floor, and it adapts to the surface. Throttle "
+  "isn't touched, and braking out of a turn is never limited. Ignores slow turns (under 120 °/s). On a very slick "
+  "floor, off can feel better: the tyres just slide at full power.",
+  "How much faster than the robot is actually turning the wheels may go before traction control steps in, in %. "
+  "Tyres grip best at a little slip, so don't set it too low. Lower = holds the tyres closer to grip (can feel "
+  "restrained); higher = lets them spin more before acting. Try 15 to 40.",
+  "Stall protection. A wheel asked for more than 25% that's moving slower than 1 km/h for Stall Time is stalled "
+  "(pinned, jammed): it's held to Protect % until it's moving again or you ease off. With no current limit on the "
+  "ESCs, a stall otherwise cooks the motors and ESCs.",
+  "How long a wheel must be stalled before it's limited, in seconds. Shorter protects sooner but may trip on a hard "
+  "launch or a short shove; longer gives you more full-power pushing. e.g. 1 to 3.",
+  "The output a wheel is held to while it's stalled, or at ESC Max °C, in %. Low enough to keep the motor and ESC "
+  "from overheating, high enough to still drive / wriggle free. e.g. 20 to 40.",
+  "ESC temperature limit, °C. From 15 °C below this, that wheel's maximum output is eased down, reaching Protect % at "
+  "this temperature. Never cuts completely. Set a little under your ESC's own thermal cut-out. 0 = off.",
+  "Traction control ignores turns slower than this, °/s: at low speed the wheel speed reading is too coarse to "
+  "judge slip. Lower = acts on gentler turns too (but may misjudge); higher = only steps in on fast turns. e.g. 80 to 200.",
+  "The least traction control will ever leave of the turning output, in %, so there's always some steering. "
+  "e.g. 15 to 40.",
+  "How fast traction control backs the turning off when it sees wheelspin, per second (4 = from full to the TC Min % "
+  "floor in about 0.2 s). Higher = catches spin quicker but can feel abrupt; lower = smoother but lets it spin longer.",
+  "How fast it lets the turning back once the tyres grip, per second (1.5 = back to full in about 0.5 s). Higher = "
+  "recovers quicker but may spin up again and pulse; lower = smoother but feels held back longer.",
+  "Magnet poles in the drive motors (count the magnets: e.g. 12N14P = 14). Converts the ESCs' electrical RPM to real "
+  "motor RPM, so the dashboard's RPM and speed, traction control and stall detection all depend on it. Changes "
+  "straight away. Kept by Load defaults.",
+  "Gearbox reduction, motor turns per wheel turn (e.g. 19 for 19:1). Used for wheel RPM and speed on the dashboard, "
+  "the Max Avg Spd record, traction control and stall detection. Same for every wheel. Kept by Load defaults.",
+  "Drive wheel diameter, mm (measure the tyre as it is now - worn tyres are smaller). Used for the speed on the "
+  "dashboard, the Max Avg Spd record, traction control and stall detection. Same for every wheel. Kept by Load "
+  "defaults.",
+  "What ESC output 1 drives, so the motors can be plugged in in any order. Left / Right drive get the left / right "
+  "side of the drive mix; traction control, stall and temperature protection and the side LEDs follow. Weapon and "
+  "Spare are sent stop for now. Each drive side should be on exactly one ESC. Locked while armed; kept by Load defaults.",
+  "What ESC output 2 drives - see ESC1 Role.",
+  "What ESC output 3 drives - see ESC1 Role. Only used once NUM_ESC is 3 or more.",
+  "What ESC output 4 drives - see ESC1 Role. Only used once NUM_ESC is 4.",
+  "Autotune aggressiveness: how close to the point where the yaw loop would start oscillating the PID test puts "
+  "P, I and D. 0 = soft (smooth, lots of margin), 0.5 = medium (Tyreus-Luyben, cautious), 1 = aggressive "
+  "(Ziegler-Nichols: stiff, snappy, strong I, less margin). Only changes the numbers the PID test suggests - set it "
+  "before running the test. Too twitchy or buzzes after a hit: lower it and rerun. Sloppy: raise it.",
+  "How much turn full steering stick asks for in the Stab modes, % of Max Rate (after Expo, so the curve keeps its "
+  "shape over the whole stick). Like turning the transmitter's steering rate down, but only in Stab: the controller "
+  "can still use full power (up to Out Limit) to hold heading and fight hits, and the non-Stab / IMU Off modes keep "
+  "full steering. Change this rather than Max Rate to change the feel: Max Rate also scales FF, P, I and D. "
+  "e.g. 75 = full stick asks for 3/4 of Max Rate.",
+  "The robot's weight, kg (e.g. 13.6 for 30 lb). Only used for the Biggest Hit record: turns the hit's speed and "
+  "spin change into energy (J). 0 = energy not worked out. Kept by Load defaults.",
+  "Robot length, mm, overall. Only used for the Biggest Hit record: with Width, how hard the robot is to spin "
+  "(treated as an even slab). 0 = guessed from Track mm + Wheel Dia mm. Kept by Load defaults.",
+  "Robot width, mm, overall. Only used for the Biggest Hit record - see Length. 0 = guessed from Track mm + Wheel "
+  "Dia mm. Kept by Load defaults."
 };
 volatile float tuneVal[NUM_TUNE] = { 0 };
 
 // Sections on the Whale Tuning page: "Title:box,box,...|Title:...". Boxes appear in the order listed (the yaw ones in
 // tuning order). Any box not listed goes in an "Other" section at the end.
 const char *tuneGroups =
-  "Yaw Tuning:9,14,15,11,6,8,7,20,10,12,13,21,24,25,26,27,28,29,30,36"
+  "Yaw Tuning:9,57,14,15,11,6,8,7,20,10,12,13,21,24,25,26,27,28,29,30,36,56"
   "|Battery:35,32,33,34,37"
-  "|Hardware:16,17,18,19,31,22,23"
+  "|Protection:39,40,45,46,47,48,41,42,43,44"
+  "|Hardware:52,53,54,55,16,17,18,19,31,38,49,50,51,58,59,60,22,23"
   "|Software:0,1,2,3,5,4";
+
+// Tuning boxes used by more than one tab (the rest are defined in the tab that uses them)
+#define T_YAW_RATE 9     // full stick = this yaw rate, °/s. 0 = stabilisation off (plain stick steering)
+#define T_YAW_ACCEL 10   // most the requested rate may change per second, °/s². 0 = no limit
+#define T_YAW_FF 11      // feedforward: steering straight from the requested rate
+#define T_TRACK_MM 38    // Track mm (wheel centre to centre)
+#define T_TC_SLIP 40     // TC Slip %: how much faster than the robot the wheels may turn before traction control steps in
+
+// Autotune test types (autotune.ino; the web page's buttons start them)
+#define AT_TEST_TRACTION 1
+#define AT_TEST_FF 2
+#define AT_TEST_PID 3
+#define T_MASS_KG 58     // Mass kg, Length mm, Width mm: only for the Biggest Hit record (hits.ino)
+#define T_LEN_MM 59
+#define T_WID_MM 60
+#define T_AT_AGGR 56     // autotune aggressiveness, 0 soft .. 0.5 medium .. 1 aggressive
+#define T_YAW_P 6        // yaw P, I, D and the gyro low-pass: here (not yaw_pid.ino) so autotune.ino can use them
+#define T_YAW_I 7
+#define T_YAW_D 8
+#define T_GYRO_LPF 14
 
 // Boxes shown as a dropdown instead of a number: "value:label|value:label". nullptr = a normal number box.
 const char *tuneChoice[NUM_TUNE] = {
@@ -328,7 +441,13 @@ const char *tuneChoice[NUM_TUNE] = {
   "1:On|0:Off", nullptr, nullptr, nullptr,
   nullptr,
   nullptr, nullptr, "1:Ramp|0:Hard cut", "0:ESCs|1:Divider",
-  nullptr, nullptr
+  nullptr, nullptr,
+  nullptr, "1:On|0:Off", nullptr, "1:On|0:Off", nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr,
+  "1:Left|2:Right|3:Weapon|4:Spare", "1:Left|2:Right|3:Weapon|4:Spare",
+  "1:Left|2:Right|3:Weapon|4:Spare", "1:Left|2:Right|3:Weapon|4:Spare",
+  nullptr, nullptr, nullptr, nullptr, nullptr
 };
 #define T_WIFI_POWER 5   // 1 low, 2 medium, 3 high (0 / anything else = high)
 #define T_ESC_DIR 16     // 16..19: ESC 1..4 direction, 0 normal, 1 reversed
@@ -368,7 +487,26 @@ const float tuneDefault[NUM_TUNE] = {
   1.0f,     // Batt Limit: Ramp
   0.0f,     // Batt Source: ESCs (as before - set Divider once it's wired)
   30.0f,    // Hold Settle °/s
-  10.0f     // Batt Limp %
+  10.0f,    // Batt Limp %
+  345.0f,   // Track mm
+  1.0f,     // Traction Ctrl: on
+  25.0f,    // TC Slip %
+  1.0f,     // Stall Protect: on
+  1.5f,     // Stall Time s
+  30.0f,    // Protect %
+  90.0f,    // ESC Max °C
+  120.0f,   // TC Min °/s
+  25.0f,    // TC Min %
+  4.0f,     // TC Drop /s
+  1.5f,     // TC Rise /s
+  14.0f,    // Motor Poles
+  19.0f,    // Gear Ratio
+  101.0f,   // Wheel Dia mm
+  1, 2, 3, 4,  // ESC1..4 Role: Left drive, Right drive, Weapon, Spare
+  0.5f,        // AT Aggr: medium
+  100,         // Stab Steer %: full stick = full Max Rate
+  13.6f,       // Mass kg: 30 lb
+  0, 0         // Length / Width mm: not measured yet (guessed from the wheels)
 };
 
 
@@ -435,10 +573,12 @@ volatile float throttleCmd[MAX_ESC] = { 0.00f, 0.00f, 0.00f, 0.00f };  // DShot 
 // The manual reboot is blind: it runs on timers only and hands control back at the end even if telemetry never
 // returns. After that, the automatic lost detection only re-engages once the ESC has been heard from again.
 
-// LEDs that belong to each ESC: they blink orange over the normal pattern while that ESC is lost / re-arming.
-// Assumes LEDs 0-5 are on the ESC1 (left) side and 6-11 on the ESC2 (right) side. Set a count to 0 for no LEDs.
-const int ESC_LED_FIRST[MAX_ESC] = { 0, 6, 0, 0 };
-const int ESC_LED_COUNT[MAX_ESC] = { 6, 6, 0, 0 };
+// LEDs on each side of the robot: they blink orange over the normal pattern while the drive ESC on that side is lost
+// or re-arming (the ESC Role boxes say which ESC drives which side). LEDs 0-5 = left side, 6-11 = right side.
+#define LED_LEFT_FIRST 0
+#define LED_LEFT_COUNT 6
+#define LED_RIGHT_FIRST 6
+#define LED_RIGHT_COUNT 6
 #define ESC_LED_COLOR 0xFF5000  // orange
 #define ESC_LED_BLINK_MS 125    // on for this long, off for this long
 
@@ -480,8 +620,27 @@ unsigned long lastUpdate = 0;
 
 // ---------------- Hardware ----------------
 // ESC signal pins, in web-page order (ESC 1..4).
-// ESC 1 = GPIO 1 and ESC 2 = GPIO 2 ESC 3 = GPIO 15 and ESC 4 = GPIO 16
-const int ESC_PINS[MAX_ESC] = { 1, 2, 15, 16 };
+// ESC 1 = GPIO 2 and ESC 2 = GPIO 1, matching your original (swapped) begin() calls.
+// ESC 3 and ESC 4 pins are a guess - change them to wherever you wire them.
+const int ESC_PINS[MAX_ESC] = { 2, 1, 16, 15 };
+
+// What each ESC output drives: the "ESC1 Role" .. "ESC4 Role" boxes (Hardware section). Lets the motors be plugged in
+// in any order. Weapon and Spare outputs are sent stop for now (ready for code that drives them).
+#define T_ESC_ROLE 52  // 52..55 = ESC1..ESC4
+#define ROLE_LEFT 1
+#define ROLE_RIGHT 2
+#define ROLE_WEAPON 3
+#define ROLE_SPARE 4
+int escRole(int i) {  // role of ESC output i (0-based)
+  if (i < 0 || i >= MAX_ESC) return ROLE_SPARE;
+  int r = (int)lroundf(tuneVal[T_ESC_ROLE + i]);
+  return (r >= ROLE_LEFT && r <= ROLE_SPARE) ? r : ROLE_SPARE;
+}
+int escForRole(int role) {  // first ESC output with this role, or -1 if none
+  for (int i = 0; i < NUM_ESC; i++)
+    if (escRole(i) == role) return i;
+  return -1;
+}
 const uint8_t MOTOR_POLES = 14;
 
 AlfredoDShot escs[NUM_ESC];
@@ -591,8 +750,22 @@ int throttle2 = 0;
 int drive1_pwm = 0;
 int drive2_pwm = 0;
 
-int gearbox_ratio[MAX_ESC] = { 19, 19, 19, 19 };
-int wheel_diamiter[MAX_ESC] = { 101, 101, 101, 101 };  // in mm
+// Drivetrain: motor poles and gear ratio are tuning boxes (Hardware section), so they can be changed from the page
+#define T_POLES 49  // Motor Poles
+#define T_GEAR 50   // Gear Ratio
+float motorPoles() {  // magnet poles (falls back to MOTOR_POLES if the box is blank / silly)
+  float p = tuneVal[T_POLES];
+  return (p >= 2.0f && p <= 60.0f) ? p : (float)MOTOR_POLES;
+}
+float gearRatio() {  // motor turns per wheel turn
+  float g = tuneVal[T_GEAR];
+  return (g > 0.1f) ? g : 1.0f;
+}
+#define T_WHEEL_MM 51  // Wheel Dia mm
+float wheelDiaMm() {  // drive wheel diameter, mm (Wheel Dia mm box)
+  float d = tuneVal[T_WHEEL_MM];
+  return (d > 5.0f) ? d : 101.0f;
+}
 
 // DShot sending (drive.ino): its own task on core 1, woken by a 1000 µs timer - 1000 frames/s per ESC.
 #define ESC_TICK_US 1000  // time between DShot frames, µs

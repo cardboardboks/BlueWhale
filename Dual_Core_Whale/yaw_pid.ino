@@ -26,15 +26,14 @@
 // plain stick steering.
 
 // ---- which tuning box is which (names, help text and defaults: tuneName / tuneHelp / tuneDefault in the main sketch) ----
-#define T_YAW_P 6        // proportional gain: steering per unit of rate error (error / max rate)
-#define T_YAW_I 7        // integral gain, per second. Also pulls the heading back after a hit
-#define T_YAW_D 8        // derivative gain, seconds (on the measured rate, so stick moves don't kick it)
-#define T_YAW_RATE 9     // full stick = this yaw rate, deg/s. 0 = stabilisation off (plain stick steering)
-#define T_YAW_ACCEL 10   // most the requested rate may change per second, deg/s/s. 0 = no limit
-#define T_YAW_FF 11      // feedforward: steering straight from the requested rate. 1 = same as plain stick
+// T_YAW_P (6) proportional gain: steering per unit of rate error (error / max rate)       } in the main sketch:
+// T_YAW_I (7) integral gain, per second. Also pulls the heading back after a hit           } autotune.ino
+// T_YAW_D (8) derivative gain, seconds (on the measured rate, so stick moves don't kick it) } sets them too
+// T_YAW_RATE (9), T_YAW_ACCEL (10) and T_YAW_FF (11) are in the main sketch: autotune.ino uses them too
+#define T_STAB_STEER 57  // Stab Steer %: full stick asks for this % of Max Rate (after expo). Stab modes only
 #define T_YAW_FFA 12     // acceleration feedforward, seconds: extra kick while the requested rate is changing
 #define T_YAW_EXPO 13    // stick expo, 0 (linear) to 1 (soft centre)
-#define T_GYRO_LPF 14    // low-pass on the measured yaw rate, Hz. 0 = off
+// T_GYRO_LPF (14) low-pass on the measured yaw rate, Hz. 0 = off (main sketch)
 #define T_YAW_DLPF 15    // low-pass on the D term, Hz. 0 = off
 #define T_YAW_ILIM 20    // most the I term may contribute, 0 to 1 of full steering
 #define T_YAW_OLIM 21    // most the whole controller may steer, 0 to 1
@@ -145,6 +144,15 @@ bool yawKeepOnDefaults(int i) {
   return i == T_GYRO_SCALE;
 }
 
+// New-sample counter and time of the latest yaw sample (autotune.ino's PID test runs once per sample, like the PID)
+uint32_t yawImuSeqNow() { return imuYawSeq; }
+uint32_t yawImuUsNow() { return imuYawUs; }
+
+// Gyro turn rate in the stick's sign convention (steer right -> positive), °/s. Used by traction control (protect.ino).
+float yawRateStick() {
+  return -(float)imuYawRate * ((tuneVal[T_YAW_DIR] < 0) ? -1.0f : 1.0f);
+}
+
 // Bulk Text line. Measured rate is in the stick's sign: steer right -> it should go positive (see Yaw Dir).
 String yawStatusLine() {
   if (yawActive)
@@ -250,7 +258,9 @@ float yawStab(float stick, float throttle) {
 
   // ---- setpoint: expo, max rate, max rotational acceleration ----
   float st = stick * (1.0f - expo) + stick * stick * stick * expo;
-  float target = st * maxRate;
+  float steerPct = tuneVal[T_STAB_STEER];
+  if (!(steerPct >= 0)) steerPct = 100.0f;
+  float target = st * constrain(steerPct, 0.0f, 100.0f) / 100.0f * maxRate;  // Stab Steer %: the driver's range only
 
   // ---- heading hold: with the stick centred, once the turn has finished, hold that heading ----
   float bleed = tuneVal[T_YAW_IBLEED];
@@ -347,6 +357,9 @@ float yawStab(float stick, float throttle) {
   float u = base + iNew;
   // anti-windup: if the output is already pinned and the error would push it further, don't let I grow
   if (fabsf(u) > oLim && ((u > 0) == (e > 0)) && fabsf(iNew) > fabsf(yawI)) iNew = (ki > 0) ? yawI : 0.0f;
+  // ...and while traction control is cutting the turning output back (protect.ino), the same: don't let I wind up
+  // fighting it - the robot can't turn faster than the tyres allow
+  if (tcLimiting() && fabsf(iNew) > fabsf(yawI)) iNew = (ki > 0) ? yawI : 0.0f;
   yawI = iNew;
   u = constrain(base + yawI, -oLim, oLim);
 

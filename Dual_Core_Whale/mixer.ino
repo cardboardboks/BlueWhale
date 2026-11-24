@@ -131,6 +131,18 @@ void mixer(float throttle, float steering) {
   }
 
 
+  // Autotune (autotune.ino): while a test runs, it does the steering itself from its own command, throttle 0, and the
+  // yaw controller / traction control are bypassed. It stops itself the moment a stick moves or you disarm.
+  float atOut = 0.0f;
+  bool atRun = autotuneUpdate(deadband(constrain((throttle - 1500.0f) / 500.0f, -1.0f, 1.0f)),
+                              deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)), &atOut);
+  if (atRun) {
+    t = 0.0f;
+    s = atOut;
+    stab = false;
+    modeString = "Autotune";
+  }
+
   // Yaw stabilisation: the steering stick becomes a yaw rate request and the controller does the steering.
   // Outside the Stab modes it's reset, so switching in is bumpless.
   if (stab) s = yawStab(deadband(constrain((steering - 1500.0f) / 500.0f, -1.0f, 1.0f)),
@@ -175,6 +187,9 @@ void mixer(float throttle, float steering) {
   outL = left;
   outR = right;
 
+  // Traction control (protect.ino): if the wheels are spinning in a turn, scale back just the turning part
+  protectTraction(left, right, !imuOffMode && !atRun);  // off in IMU Off mode (plain 1:1 driving) and during autotune
+
   // Low battery (battery.ino): scale both wheels by the cap, so throttle, steering and the yaw controller all come down
   // together and turns keep their shape. IMU Off mode never goes below the "Batt Limp %" box, so it can always
   // show movement.
@@ -188,6 +203,9 @@ void mixer(float throttle, float steering) {
     else modeString = "Batt Cut";
   }
   else if (cap < 0.995f) modeString = "Low Batt " + String((int)lroundf(cap * 100)) + "%";
+
+  // Stall + ESC temperature limits per wheel (protect.ino)
+  protectWheels(left, right);
 
   // Min Output %: any non-zero wheel output starts at least here; the rest of the range is spread over what's left
   float mo = constrain((float)tuneVal[T_MIN_OUT] / 100.0f, 0.0f, 0.9f);

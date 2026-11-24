@@ -119,7 +119,10 @@ body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 
 .modal.show { display: flex; }
 button:disabled { opacity: .35; pointer-events: none; }
 .tv input:disabled { opacity: .45; }
-#c-cal { margin-top: 5px; }
+#c-cal, #c-at { margin-top: 5px; }
+#c-at .tfile { margin: 4px 0 0; }
+#at-msg, #at-res { text-align: left; color: var(--val); }
+#at-res { color: #fff; font-weight: 600; }
 .tsec + .tsec { margin-top: 12px; }
 .tsec > h3 { font-size: .85rem; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 5px 4px; }
 #c-cal .tfile { margin: 4px 0 0; }
@@ -259,6 +262,9 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
       <div class="kv"><span>Max Total Amps</span><span class="v" id="v-rt">--</span></div>
       <div class="kv"><span>Min Volts</span><span class="v" id="v-rv">--</span></div>
       <div class="kv"><span>Max Avg Spd</span><span class="v" id="v-rs">--</span></div>
+      <div class="kv"><span>Biggest Hit</span><span class="v" id="v-rhit">--</span></div>
+      <div class="kv"><span>Hit Push</span><span class="v" id="v-rhit2">--</span></div>
+      <div class="kv"><span>Hit Spin</span><span class="v" id="v-rhit3">--</span></div>
     </div>
 
     <div class="card" id="c-arr"><h2>State</h2><div class="dots" id="dots"></div></div>
@@ -279,6 +285,18 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
     <input type="file" id="file-param" accept=".param,.txt,text/plain" hidden>
   </div>
   <div id="tgrid"></div>
+  <div class="card" id="c-at"><h2>Autotune</h2>
+    <div class="kv"><span id="at-msg">Start a test while disarmed, then arm with the sticks centred.</span></div>
+    <div class="kv"><span id="at-res"></span></div>
+    <div class="tfile">
+      <button class="nav" id="btn-at-tc">Traction calibration</button>
+      <button class="nav" id="btn-at-ff">FF &amp; accel test</button>
+      <button class="nav" id="btn-at-pid">PID test</button>
+      <button class="reset" id="btn-at-stop">Stop</button>
+      <button class="nav" id="btn-at-apply" hidden>Apply</button>
+      <button class="reset" id="btn-at-discard" hidden>Discard</button>
+    </div>
+  </div>
   <div class="card" id="c-cal"><h2>IMU Calibration</h2>
     <div class="kv"><span>Gyro + accel offsets</span><span class="v" id="cal-offs">--</span></div>
     <div class="kv"><span>6-side accel</span><span class="v" id="cal-acal">--</span></div>
@@ -300,7 +318,7 @@ table.num td:not(.l) { font-family: ui-monospace, "SF Mono", Menlo, Consolas, mo
   <div class="card"><h3>Quick start - first time with the defaults</h3>
     <p>The defaults are worked out for this robot (30 lb, 101 mm wheels on a 345 mm track, 19:1, 1400 KV on 6S, which spins at about 2300 °/s flat out). They're deliberately soft: a safe starting point, not a finished tune.</p>
     <ol>
-      <li><b>Load defaults</b> - press it on the tuning page after flashing (kept: Name, WiFi, Gyro Scale and Batt Source).</li>
+      <li><b>Load defaults</b> - press it on the tuning page after flashing (kept: Name, WiFi, Gyro Scale and the hardware settings).</li>
       <li><b>Check Yaw Dir before anything else.</b> Wheels off the ground, in a non-Stab mode, steer right: Bulk Text <code>Yaw … °/s</code> must go <b>positive</b>.
         If it goes negative, set Yaw Dir to Reversed. The defaults include P and I, so a wrong sign makes the controller fight you - the 0.6 Out Limit keeps that to 60% steering.</li>
       <li><b>Measure the flat-out spin.</b> Still in a non-Stab mode, full stick, read the same Bulk Text figure. If it isn't about 2300, set
@@ -491,6 +509,8 @@ function buildTune(n, choice, groups) {
     `<div class="tsec" data-t="${t}">${t ? `<h3>${t}</h3>` : ''}<div class="tgrid">${idx.map(box).join('')}</div></div>`).join('');
   const hw = document.querySelector('#tgrid .tsec[data-t="Hardware"]');   // IMU calibration sits with the hardware
   if (hw) hw.appendChild($('c-cal'));
+  const yt = document.querySelector('#tgrid .tsec[data-t="Yaw Tuning"]');   // autotune sits with the yaw tuning
+  if (yt) yt.appendChild($('c-at'));
   for (let i = 0; i < n; i++) {
     const inp = $('tin' + i);
     inp.addEventListener('change', e => {
@@ -568,6 +588,7 @@ function setLocked(l, rebootLocked) {
   $('btn-pdef').disabled = l;
   $('btn-level').disabled = l;
   ['btn-caloff','btn-calside','btn-calclr','btn-calfac','btn-calgyro'].forEach(b => { $(b).disabled = l; });   // calibration: locked with the tuning
+  ['btn-at-tc','btn-at-ff','btn-at-pid','btn-at-apply'].forEach(b => { $(b).disabled = l; });   // autotune start / apply: disarmed only (Stop always works)
   setLockedInputs();
   if (l) toast(rebootLocked ? 'Armed - reboot and tuning locked' : 'Armed (link down) - tuning locked');
 }
@@ -582,7 +603,7 @@ function initWebSocket() {
 
 function onMessage(event) {
   const d = JSON.parse(event.data);
-  if (d.blocked) { toast({ reboot: 'Armed - reboot blocked', level: 'Armed - level locked', cal: 'Armed - calibration locked', imu: 'No IMU - can\'t level' }[d.blocked] || 'Armed - tuning locked'); return; }
+  if (d.blocked) { toast({ reboot: 'Armed - reboot blocked', level: 'Armed - level locked', cal: 'Armed - calibration locked', at: 'Armed - start / apply autotune while disarmed', imu: 'No IMU - can\'t level' }[d.blocked] || 'Armed - tuning locked'); return; }
   if (d.armed !== undefined) setLocked(!!d.armed, !!d.noreboot);
   lastMsg = Date.now();
 
@@ -619,6 +640,7 @@ function onMessage(event) {
       if (e.ok) lastEsc[n] = e;                 // remember the last good reading
       const shown = e.ok ? e : lastEsc[n];      // not reporting -> keep showing the last one, greyed out
       $('eh' + n).classList.toggle('off', !e.ok);
+      if (e.r !== undefined) $('eh' + n).textContent = n + (e.r ? ' ' + e.r : '');   // e.g. "1 R": ESC1 drives the right wheel
       ESC_ROWS.forEach(([l, k, dec]) => {
         const c = $(`e${n}-${k}`);
         c.textContent = shown ? f(shown[k], dec) : "";   // an ESC that never reported stays blank
@@ -642,6 +664,13 @@ function onMessage(event) {
     set('v-rt', f(d.rec.ta, 1) + " A");
     set('v-rv', f(d.rec.v, 1) + " V");
     set('v-rs', f(d.rec.s, 1) + " km/h");
+    {   // Biggest Hit: "≥" = the sensor hit its limit during it, so the real hit was bigger
+      const ge = d.rec.hc ? '≥' : '';
+      const any = d.rec.hv > 0 || d.rec.hw > 0;
+      set('v-rhit', !any ? '--' : (d.rec.hj > 0 ? ge + f(d.rec.hj, d.rec.hj < 10 ? 1 : 0) + ' J' : 'set Mass kg'));
+      set('v-rhit2', !any ? '--' : ge + f(d.rec.hv, 1) + ' m/s');   // speed change
+      set('v-rhit3', !any ? '--' : f(d.rec.hw, 0) + ' °/s');          // spin change
+    }
   }
 
   // Avg Volts: from the battery divider when fitted (live even with the motors stopped), else the ESC average.
@@ -712,6 +741,13 @@ function onMessage(event) {
     $('i-state').className = !imuOk ? "bad" : !lvl ? "warn" : "";
     ['i-gx','i-gy','i-gz','i-ax','i-ay','i-az','v-rg','i-tilt'].forEach(id => $(id).classList.toggle('stale', !imuOk));
     set('i-ud', m.ud > 0 ? "⬆️" : m.ud < 0 ? "⬇️" : "--");
+    if (d.at) {   // autotune
+      const a = d.at;   // st: 0 idle, 1 waiting for arm, 2 running, 3 results ready
+      set('at-msg', a.msg || 'Start a test while disarmed, then arm with the sticks centred.');
+      set('at-res', a.res || '');
+      $('btn-at-apply').hidden = $('btn-at-discard').hidden = (a.st !== 3);
+      $('at-msg').className = a.st === 2 ? 'warn' : '';
+    }
     if (m.cal) {
       const c = m.cal;
       set('cal-offs', c.offs ? "saved" : "factory");
@@ -743,12 +779,18 @@ function ask(detail, yesLabel, action) {
   pendingAction = action;
   modal.classList.add('show');
 }
-$('btn-reset').onclick = () => ask('All records (Max G, Max ESC Temp, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
+$('btn-reset').onclick = () => ask('All records (Max G, Max ESC Temp, Max ESC Amps, Max Total Amps, Min Volts, Max Avg Speed, Biggest Hit) will be reset to 0.', 'Yes, reset', () => wsSend('reset'));
 $('btn-reboot').onclick = () => ask('The board will restart. Motors lose their signal and the page reconnects in a few seconds.', 'Yes, reboot', () => wsSend('reboot'));
 $('btn-level').onclick = () => ask('Sit the robot flat and the right way up, and keep it still. Its current position becomes upright, and up/down flips at 90 degrees from it.', 'Yes, level', () => { wsSend('level'); toast('Levelled'); });
-$('btn-pdef').onclick = () => ask('Every number box goes back to its default (yaw tuning, battery, ESC and Yaw Dir, WiFi power). Kept: Name, SSID, Password and the other text boxes, plus Gyro Scale (your calibration) and Batt Source (your wiring). Save a .param first if you want to keep the current values.', 'Yes, load defaults', () => { wsSend('defaults'); tmsg('Defaults loaded'); });
+$('btn-pdef').onclick = () => ask('Every number box goes back to its default (yaw tuning, battery, ESC and Yaw Dir, WiFi power). Kept: Name, SSID, Password and the other text boxes, plus Gyro Scale (your calibration) and your hardware settings (ESC Roles, Batt Source, Motor Poles, Gear Ratio, Wheel Dia). Save a .param first if you want to keep the current values.', 'Yes, load defaults', () => { wsSend('defaults'); tmsg('Defaults loaded'); });
 $('btn-caloff').onclick = () => ask('Put the IMU board flat with the chip facing up and keep everything perfectly still for a few seconds. The IMU stops reporting while it runs. Clears the 6-side calibration and the Level.', 'Yes, calibrate', () => wsSend('cal_off'));
 $('btn-calside').onclick = () => wsSend('cal_side');   // rest the robot on a side, keep still ~1 s
+$('btn-at-tc').onclick = () => ask('Traction calibration: the robot spins itself gently on the spot, 6 times, alternating direction (~13 s). Needs a clear area, wheels on the floor and Yaw Dir correct. After Yes: ARM with both sticks centred to start. Disarm or move a stick to stop it at once.', 'Yes, set it up', () => wsSend('at_tc'));
+$('btn-at-ff').onclick = () => ask('FF & accel test: the robot spins itself on the spot at 50, 75 and 100% turning, 6 times, alternating direction, with rests (~15 s). Needs a clear area, wheels on the floor and Yaw Dir correct. After Yes: ARM with both sticks centred to start. Disarm or move a stick to stop it at once.', 'Yes, set it up', () => wsSend('at_ff'));
+$('btn-at-pid').onclick = () => ask('PID test: the robot spins steadily one way at half your Max Rate, then the spin is wobbled slightly faster / slower until it can be measured, without letting the tyres slip (~6-15 s). Run the FF test first. Needs a clear area, wheels on the floor and Yaw Dir correct. After Yes: ARM with both sticks centred to start. Disarm or move a stick to stop it at once.', 'Yes, set it up', () => wsSend('at_pid'));
+$('btn-at-stop').onclick = () => wsSend('at_stop');
+$('btn-at-apply').onclick = () => wsSend('at_apply');
+$('btn-at-discard').onclick = () => wsSend('at_discard');
 $('btn-calgyro').onclick = () => ask('After pressing Yes, pick the robot up (or lift its wheels) and twist it back and forth quickly - at least a couple of full turns in total, within 10 seconds. It sets Gyro Scale from the IMU\'s own orientation, and saves it.', 'Yes, start', () => wsSend('cal_gyro'));
 $('btn-calfac').onclick = () => ask('Forget the saved gyro + accel offsets and go back to the chip\'s own. The IMU restarts. Clears the 6-side calibration and the Level.', 'Yes, factory', () => wsSend('cal_fac'));
 $('btn-calclr').onclick = () => ask('Forget the 6-side accel calibration (and the Level, which depends on it).', 'Yes, clear', () => wsSend('cal_clr'));

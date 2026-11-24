@@ -214,6 +214,11 @@ void imuTask(void *arg) {
 
       imuLastGoodMs = millis();  // this packet passed every check
 
+      // the accel BEFORE the median filter, for the Biggest Hit record (a short hit is one reading: the median would
+      // throw it away). Largest raw count too, to see if it reached the +/-2 g limit.
+      float hitRaw[3] = { (aa.x - accOff[0]) / accScale[0], (aa.y - accOff[1]) / accScale[1], (aa.z - accOff[2]) / accScale[2] };
+      int hitRawMax = max(max(abs((int)aa.x), abs((int)aa.y)), abs((int)aa.z));
+
       // median-of-3 on every axis to remove single-sample spikes
       gy.x = mGx.add(gy.x);
       gy.y = mGy.add(gy.y);
@@ -223,6 +228,9 @@ void imuTask(void *arg) {
       aa.z = mAz.add(aa.z);
 
       yawImuSample(gy.x, gy.y, gy.z, gravity.x, gravity.y, gravity.z);  // feed the yaw controller (yaw_pid.ino)
+      if (imuWarm >= IMU_WARMUP)  // Biggest Hit record (hits.ino), once the DMP has settled
+        hitSample(hitRaw[0] - gravity.x, hitRaw[1] - gravity.y, hitRaw[2] - gravity.z, q.w, q.x, q.y, q.z,
+                  yawRateStick(), hitRawMax, micros());
       if (imuCalGyroReq) yawGyroCalSample(gy.x, gy.y, gy.z, q.w, q.x, q.y, q.z, micros());  // gyro scale calibration
 
       imuGx = gy.x;

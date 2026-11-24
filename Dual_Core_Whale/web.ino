@@ -106,8 +106,10 @@ int wifiRssi() {
 void addEsc(JsonArray arr, int i, bool ok) {
   JsonObject o = arr.add<JsonObject>();
   o["ok"] = ok;
+  static const char *const roleTag[] = { "", "L", "R", "W", "S" };
+  o["r"] = roleTag[escRole(i)];  // shown next to the ESC number on the page (ESC Role boxes)
   if (!ok) return;  // absent ESC -> page leaves its column blank
-  float rpmOut = escRpm(i) / gearbox_ratio[i];
+  float rpmOut = escRpm(i) / gearRatio();
   o["thr"] = escThrPct(i);  // an unset output (0) works out to -300 %, shown as 0 %
   o["v"] = escVolts(i);
   o["a"] = escCurrent(i);
@@ -192,6 +194,16 @@ String getSerializedData(bool full) {
   rec["ta"] = (float)recMaxTotalA;
   rec["v"] = (float)recMinV;
   rec["s"] = (float)recMaxSpd;
+  {
+    portENTER_CRITICAL(&recHitMux);
+    float hj = recHitJ, hv = recHitDv, hw = recHitDw;
+    bool hc = recHitClip;
+    portEXIT_CRITICAL(&recHitMux);
+    rec["hj"] = hj;   // Biggest Hit: energy J, speed change m/s, spin change °/s, sensor limit reached
+    rec["hv"] = hv;
+    rec["hw"] = hw;
+    rec["hc"] = hc;
+  }
 
   // Outputs
   JsonArray outArr = doc["out"].to<JsonArray>();
@@ -207,6 +219,7 @@ String getSerializedData(bool full) {
   imu["az"] = (int)imuAz;
   if (imuLevelled) imu["tilt"] = (float)imuTiltDeg;  // degrees from the levelled upright (left out until levelled)
   imu["lvl"] = (bool)imuLevelled;
+  autotuneJson(doc["at"].to<JsonObject>());     // autotune status / results for the Tuning page
   JsonObject cal = imu["cal"].to<JsonObject>();  // calibration status for the Tuning page
   cal["offs"] = (bool)imuOffsValid;
   cal["acal"] = (bool)accCalValid;
@@ -253,6 +266,19 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
       if (len == 5 && memcmp(data, "reset", 5) == 0) resetRecords();
+      // Autotune (autotune.ino): start / apply only while disarmed; Stop and Discard work any time
+      else if (len >= 5 && memcmp(data, "at_", 3) == 0) {
+        bool startOrApply = (len == 5 && (memcmp(data, "at_tc", 5) == 0 || memcmp(data, "at_ff", 5) == 0)) ||
+                            (len == 6 && memcmp(data, "at_pid", 6) == 0) ||
+                            (len == 8 && memcmp(data, "at_apply", 8) == 0);
+        if (len == 7 && memcmp(data, "at_stop", 7) == 0) autotuneStop();
+        else if (len == 10 && memcmp(data, "at_discard", 10) == 0) autotuneDiscard();
+        else if (startOrApply && armSwitchHigh()) client->text("{\"blocked\":\"at\"}");
+        else if (len == 5 && memcmp(data, "at_tc", 5) == 0) autotuneRequest(AT_TEST_TRACTION);
+        else if (len == 5 && memcmp(data, "at_ff", 5) == 0) autotuneRequest(AT_TEST_FF);
+        else if (len == 6 && memcmp(data, "at_pid", 6) == 0) autotuneRequest(AT_TEST_PID);
+        else if (len == 8 && memcmp(data, "at_apply", 8) == 0) autotuneApply();
+      }
       // IMU calibration buttons (Tuning page): locked while armed, and need a working IMU
       else if (len >= 7 && memcmp(data, "cal_", 4) == 0) {
         if (armSwitchHigh()) client->text("{\"blocked\":\"cal\"}");
@@ -284,7 +310,9 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *client, AwsEventType typ
           client->text("{\"blocked\":\"params\"}");
         } else {
           for (int i = NUM_TUNE_STR; i < NUM_TUNE; i++)
-            if (!yawKeepOnDefaults(i) && i != T_BAT_SRC) tuneVal[i] = tuneDefault[i];  // kept: Gyro Scale (calibrated), Batt Source (wiring)
+            if (!yawKeepOnDefaults(i) && i != T_BAT_SRC && i != T_POLES && i != T_GEAR && i != T_WHEEL_MM && i != T_MASS_KG && i != T_LEN_MM && i != T_WID_MM &&
+                !(i >= T_ESC_ROLE && i < T_ESC_ROLE + MAX_ESC))
+              tuneVal[i] = tuneDefault[i];  // kept: Gyro Scale (calibrated), Batt Source, Motor Poles, Gear Ratio, Wheel Dia, Mass, Length, Width, ESC Roles (hardware)
           tuneChangedMs = millis();
           tuneDirty = true;  // saved to flash shortly after, like any edit
         }
